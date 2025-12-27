@@ -12,3 +12,13 @@ Has some built-in janky commands
 Display KuzuOS2 gif
 Boot (somehow)
 and muchhh moreee...
+
+
+How To Usee:
+
+firstly clone the repo then go to /where/you/cloned/it/KuzuOS5 then execute type "make"
+
+and then woilaa your fresh KuzuOS2 is readyyy and you are presented wiht a .iso file that you can eiither burn into a cd/dvd orr use with qemu like
+qemu-system-x86_64 -cdrom kuzuos.iso
+
+btw you can NOT write it into a usb because it doesnt work with usb yet only ssd/hdd or cd/dvd 
