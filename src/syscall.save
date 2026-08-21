@@ -1,0 +1,430 @@
+#include "syscall.h"
+#include "vga.h"
+#include "filesystem.h"
+#include "memory.h"
+
+// Define NULL if not already defined
+#ifndef NULL
+#define NULL ((void*)0)
+#endif
+
+// Helper string functions
+static int strlen(const char* s) {
+    int len = 0;
+    while (s[len]) len++;
+    return len;
+}
+
+static int strncmp(const char* s1, const char* s2, int n) {
+    for (int i = 0; i < n; i++) {
+        if (s1[i] != s2[i]) return s1[i] - s2[i];
+        if (s1[i] == '\0') return 0;
+    }
+    return 0;
+}
+
+// Syscall numbers (only define if not in syscall.h)
+#ifndef SYS_EXIT
+#define SYS_EXIT        1
+#endif
+#ifndef SYS_READ
+#define SYS_READ        3
+#endif
+#ifndef SYS_WRITE
+#define SYS_WRITE       4
+#endif
+#ifndef SYS_OPEN
+#define SYS_OPEN        5
+#endif
+#ifndef SYS_CLOSE
+#define SYS_CLOSE       6
+#endif
+#ifndef SYS_LSEEK
+#define SYS_LSEEK       19
+#endif
+#ifndef SYS_EXIT_GROUP
+#define SYS_EXIT_GROUP  252
+#endif
+
+// File descriptor table
+#define MAX_FDS 256
+
+typedef enum {
+    FD_FREE = 0,
+    FD_CONSOLE,      // stdin/stdout/stderr
+    FD_FILE,         // Regular file
+} fd_type_t;
+
+typedef struct {
+    fd_type_t type;
+    int flags;
+    uint32_t offset;       // Current position in file
+    uint32_t size;         // File size
+    void* data;            // Pointer to file data in memory
+    char path[256];        // File path
+} file_descriptor_t;
+
+static file_descriptor_t fd_table[MAX_FDS];
+
+void syscall_init(void)
+{
+    // Initialize file descriptor table
+    for (int i = 0; i < MAX_FDS; i++) {
+        fd_table[i].type = FD_FREE;
+        fd_table[i].flags = 0;
+        fd_table[i].offset = 0;
+        fd_table[i].size = 0;
+        fd_table[i].data = NULL;
+        fd_table[i].path[0] = '\0';
+    }
+    
+    // Set up standard streams
+    fd_table[0].type = FD_CONSOLE;  // stdin
+    fd_table[1].type = FD_CONSOLE;  // stdout
+    fd_table[2].type = FD_CONSOLE;  // stderr
+    
+    print_color("[Syscall] Initialized file descriptor table\n", VGA_COLOR_LIGHT_GREEN);
+}
+
+// Helper: Find free file descriptor
+static int alloc_fd(void)
+{
+    // Start from 3 (after stdin/stdout/stderr)
+    for (int i = 3; i < MAX_FDS; i++) {
+        if (fd_table[i].type == FD_FREE) {
+            return i;
+        }
+    }
+    return -1;  // No free descriptors
+}
+
+// Helper: Check if fd is valid
+static int is_valid_fd(int fd)
+{
+    return fd >= 0 && fd < MAX_FDS && fd_table[fd].type != FD_FREE;
+}
+
+int32_t handle_syscall(uint32_t syscall_num,
+                       uint32_t arg1, uint32_t arg2, uint32_t arg3,
+                       uint32_t arg4, uint32_t arg5, uint32_t arg6)
+{
+    (void)arg4; (void)arg5; (void)arg6;
+    
+    switch (syscall_num) {
+        case SYS_WRITE: {
+            int fd = (int)arg1;
+            const char* buf = (const char*)arg2;
+            uint32_t count = arg3;
+            
+            if (!is_valid_fd(fd)) return -1;
+            
+            if (fd_table[fd].type == FD_CONSOLE) {
+                // Write to console (stdout/stderr)
+                for (uint32_t i = 0; i < count; i++) {
+                    putchar(buf[i]);
+                }
+                return (int32_t)count;
+            } else if (fd_table[fd].type == FD_FILE) {
+                // TODO: Write to file (not implemented yet)
+                return -1;
+            }
+            return -1;
+        }
+        
+        case SYS_READ: {
+            int fd = (int)arg1;
+            char* buf = (char*)arg2;
+            uint32_t count = arg3;
+            
+            if (!is_valid_fd(fd)) return -1;
+            
+            if (fd_table[fd].type == FD_CONSOLE && fd == 0) {
+                // Read from stdin (keyboard)
+                extern void keyboard_poll(void);
+                extern char keyboard_get_char(void);
+                
+                uint32_t i = 0;
+                while (i < count) {
+                    // Poll keyboard until we get a character
+                    char c = 0;
+                    while (c == 0) {
+                        keyboard_poll();
+                        c = keyboard_get_char();
+                        if (c == 0) {
+                            // Small delay to avoid busy-waiting
+                            for (volatile int d = 0; d < 1000; d++);
+                        }
+                    }
+                    
+                    // Echo the character (like a terminal does)
+                    if (c == '\b' || c == 127) {
+                        // Backspace
+                        if (i > 0) {
+                            i--;
+                            putchar('\b');
+                            putchar(' ');
+                            putchar('\b');
+                        }
+                        continue;
+                    }
+                    
+                    // Echo to screen
+                    putchar(c);
+                    
+                    // Store character
+                    buf[i++] = c;
+                    
+                    // If newline, we're done
+                    if (c == '\n' || c == '\r') {
+                        buf[i - 1] = '\n';  // Normalize to \n
+                        break;
+                    }
+                }
+                
+                return (int32_t)i;
+            } else if (fd_table[fd].type == FD_FILE) {
+                // Read from file
+                file_descriptor_t* file = &fd_table[fd];
+                
+                if (file->offset >= file->size) {
+                    return 0;  // EOF
+                }
+                
+                uint32_t to_read = count;
+                if (file->offset + to_read > file->size) {
+                    to_read = file->size - file->offset;
+                }
+                
+                // Copy data from file buffer
+                char* src = (char*)file->data + file->offset;
+                for (uint32_t i = 0; i < to_read; i++) {
+                    buf[i] = src[i];
+                }
+                
+                file->offset += to_read;
+                return (int32_t)to_read;
+            }
+            return -1;
+        }
+        
+        case SYS_OPEN: {
+            const char* filename = (const char*)arg1;
+            int flags = (int)arg2;
+            // int mode = (int)arg3;  // Unused for now
+            
+            // Find free fd
+            int fd = alloc_fd();
+            if (fd < 0) return -1;
+            
+            // Try to read the file into memory
+            char* file_buffer = (char*)kmalloc(65536);  // 64KB max file size
+            if (!file_buffer) return -1;
+            
+            int bytes_read = fs_read_file((char*)filename, file_buffer, 65536);
+            if (bytes_read < 0) {
+                kfree(file_buffer);
+                return -1;
+            }
+            
+            // Set up file descriptor
+            fd_table[fd].type = FD_FILE;
+            fd_table[fd].flags = flags;
+            fd_table[fd].offset = 0;
+            fd_table[fd].size = (uint32_t)bytes_read;
+            fd_table[fd].data = file_buffer;
+            
+            // Copy filename
+            int i;
+            for (i = 0; i < 255 && filename[i]; i++) {
+                fd_table[fd].path[i] = filename[i];
+            }
+            fd_table[fd].path[i] = '\0';
+            
+            return fd;
+        }
+        
+        case SYS_CLOSE: {
+            int fd = (int)arg1;
+            
+            if (!is_valid_fd(fd)) return -1;
+            if (fd <= 2) return 0;  // Can't close stdin/stdout/stderr
+            
+            // Free file data if it's a file
+            if (fd_table[fd].type == FD_FILE && fd_table[fd].data) {
+                kfree(fd_table[fd].data);
+            }
+            
+            // Mark as free
+            fd_table[fd].type = FD_FREE;
+            fd_table[fd].data = NULL;
+            
+            return 0;
+        }
+        
+        case SYS_LSEEK: {
+            int fd = (int)arg1;
+            int32_t offset = (int32_t)arg2;
+            int whence = (int)arg3;
+            
+            if (!is_valid_fd(fd)) return -1;
+            if (fd_table[fd].type != FD_FILE) return -1;
+            
+            file_descriptor_t* file = &fd_table[fd];
+            uint32_t new_offset;
+            
+            switch (whence) {
+                case 0:  // SEEK_SET
+                    new_offset = offset;
+                    break;
+                case 1:  // SEEK_CUR
+                    new_offset = file->offset + offset;
+                    break;
+                case 2:  // SEEK_END
+                    new_offset = file->size + offset;
+                    break;
+                default:
+                    return -1;
+            }
+            
+            if (new_offset > file->size) {
+                new_offset = file->size;
+            }
+            
+            file->offset = new_offset;
+            return (int32_t)new_offset;
+        }
+        
+        case SYS_GETDENTS: {  // Get directory entries
+            // int fd = (int)arg1;  // Unused for now
+            char* path = (char*)arg2;
+            char* buffer = (char*)arg3;
+            uint32_t bufsize = arg4;
+            
+            // Use filesystem's existing listing infrastructure
+            extern int fs_any_exists(char* path);
+            extern int fs_any_is_directory(char* path);
+            
+            // Verify path exists and is a directory
+            if (!fs_any_exists(path) || !fs_any_is_directory(path)) {
+                return -1;
+            }
+            
+            // We'll build a simple list by examining both TinyFS and ISO
+            extern struct fs_header* get_fs_header(void);
+            struct fs_header* fs = get_fs_header();
+            
+            uint32_t offset = 0;
+            int count = 0;
+            
+            // List TinyFS entries
+            if (fs && fs->magic == 0x12345678) {
+                int path_len = strlen(path);
+                
+                for (uint32_t i = 0; i < 64 && offset < bufsize - 64; i++) {
+                    if (fs->files[i].used) {
+                        char* file_path = fs->files[i].path;
+                        
+                        // Check if this file is a direct child of the path
+                        if (strncmp(file_path, path, path_len) == 0) {
+                            char* rest = file_path + path_len;
+                            if (*rest == '/') rest++;  // Skip leading slash
+                            
+                            // Make sure it's a direct child (no more slashes)
+                            int has_slash = 0;
+                            for (int j = 0; rest[j]; j++) {
+                                if (rest[j] == '/') {
+                                    has_slash = 1;
+                                    break;
+                                }
+                            }
+                            
+                            if (!has_slash && *rest != '\0') {
+                                // Copy filename
+                                char* name = fs->files[i].name;
+                                int name_len = strlen(name);
+                                
+                                if (offset + name_len + 2 < bufsize) {
+                                    for (int j = 0; j < name_len; j++) {
+                                        buffer[offset++] = name[j];
+                                    }
+                                    buffer[offset++] = '\n';
+                                    count++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // TODO: Add ISO entries here if needed
+            
+            if (offset < bufsize) {
+                buffer[offset] = '\0';
+            }
+            
+            return count;  // Return number of entries found
+        }
+        
+        case SYS_EXIT:
+        case SYS_EXIT_GROUP: {
+            int code = (int)arg1;
+            
+            // Close all open file descriptors
+            for (int i = 3; i < MAX_FDS; i++) {
+                if (fd_table[i].type == FD_FILE && fd_table[i].data) {
+                    kfree(fd_table[i].data);
+                    fd_table[i].type = FD_FREE;
+                }
+            }
+            
+            print_color("\n[Program exited with code ", VGA_COLOR_LIGHT_GREY);
+            char buf[16];
+            int pos = 0;
+            
+            if (code == 0) {
+                buf[pos++] = '0';
+            } else {
+                if (code < 0) {
+                    buf[pos++] = '-';
+                    code = -code;
+                }
+                char tmp[16];
+                int tp = 0;
+                while (code > 0 && tp < 15) {
+                    tmp[tp++] = '0' + (code % 10);
+                    code /= 10;
+                }
+                while (tp--) {
+                    buf[pos++] = tmp[tp];
+                }
+            }
+            buf[pos] = 0;
+            print(buf);
+            print("]\n");
+            
+            // TODO: Return to shell instead of halting
+            __asm__ volatile("cli; hlt");
+            return 0;
+        }
+        
+        default:
+            print_color("[Unknown syscall: ", VGA_COLOR_LIGHT_RED);
+            char num[16];
+            int p = 0;
+            uint32_t n = syscall_num;
+            if (n == 0) num[p++] = '0';
+            else {
+                char tmp[16];
+                int t = 0;
+                while (n > 0) {
+                    tmp[t++] = '0' + (n % 10);
+                    n /= 10;
+                }
+                while (t--) num[p++] = tmp[t];
+            }
+            num[p] = 0;
+            print(num);
+            print("]\n");
+            return -1;
+    }
+}

@@ -1,0 +1,808 @@
+#include "filesystem.h"
+#include "memory.h"
+#include "process.h"
+#include "vga.h"
+#include "io.h"
+
+// Disk I/O portları
+#define DISK_DATA_PORT 0x1F0
+#define DISK_ERROR_PORT 0x1F1
+#define DISK_SECTOR_COUNT_PORT 0x1F2
+#define DISK_LBA_LOW_PORT 0x1F3
+#define DISK_LBA_MID_PORT 0x1F4
+#define DISK_LBA_HIGH_PORT 0x1F5
+#define DISK_DRIVE_PORT 0x1F6
+#define DISK_COMMAND_PORT 0x1F7
+#define DISK_STATUS_PORT 0x1F7
+
+// Disk komutları
+#define DISK_CMD_READ 0x20
+#define DISK_CMD_WRITE 0x30
+#define ATAPI_CMD_PACKET 0xA0
+#define ATAPI_CMD_IDENTIFY 0xA1
+
+// --- local helpers ---
+static int strlen_local(const char* s) { int n = 0; while (s && s[n]) n++; return n; }
+static int strncmp_local(const char* a, const char* b, int n) { for (int i=0;i<n;i++){ unsigned char x=a[i], y=b[i]; if (x!=y) return x-y; if (x==0||y==0) return 0;} return 0; }
+static int strncmp_case_insensitive(const char* a, const char* b, int n) { 
+    for (int i=0;i<n;i++){
+        unsigned char x=a[i], y=b[i];
+        // Convert to uppercase for comparison
+        if (x >= 'a' && x <= 'z') x = x - 'a' + 'A';
+        if (y >= 'a' && y <= 'z') y = y - 'a' + 'A';
+        if (x!=y) return x-y; 
+        if (x==0||y==0) return 0;
+    } 
+    return 0; 
+}
+static char* strchr_local(const char* str, char c) { while (*str != '\0') { if (*str == c) return (char*)str; str++; } return 0; }
+
+// ATAPI helpers
+static int atapi_wait_drq() {
+    uint32_t attempts = 10000;
+    while (attempts--) {
+        uint8_t st = inb(DISK_STATUS_PORT);
+        if (st & 0x01) return -1; // ERR
+        if (st & 0x08) return 0;  // DRQ set
+    }
+    return -1;
+}
+
+static void atapi_select_drive() { outb(DISK_DRIVE_PORT, 0xA0); }
+
+// Read one 2048-byte ATAPI block via READ(12)
+static int atapi_read_block_2048(uint32_t lba, char* buffer) {
+    atapi_select_drive();
+    outb(DISK_LBA_MID_PORT, 2048 & 0xFF);
+    outb(DISK_LBA_HIGH_PORT, (2048 >> 8) & 0xFF);
+    outb(DISK_COMMAND_PORT, ATAPI_CMD_PACKET);
+    if (atapi_wait_drq() != 0) return -1;
+    uint16_t pkt[6]; for (int i=0;i<6;i++) pkt[i]=0;
+    ((uint8_t*)pkt)[0] = 0xA8; // READ(12)
+    ((uint8_t*)pkt)[2] = (uint8_t)((lba >> 24) & 0xFF);
+    ((uint8_t*)pkt)[3] = (uint8_t)((lba >> 16) & 0xFF);
+    ((uint8_t*)pkt)[4] = (uint8_t)((lba >> 8) & 0xFF);
+    ((uint8_t*)pkt)[5] = (uint8_t)(lba & 0xFF);
+    ((uint8_t*)pkt)[9] = 0x01; // 1 block
+    for (int i=0;i<6;i++) outw(DISK_DATA_PORT, pkt[i]);
+    if (atapi_wait_drq() != 0) return -1;
+    for (int i=0;i<1024;i++) { uint16_t w = inw(DISK_DATA_PORT); buffer[i*2]=(char)(w&0xFF); buffer[i*2+1]=(char)((w>>8)&0xFF);} return 0; }
+
+// RAM-backed virtual disk state
+static uint8_t* ramdisk_buffer = 0;
+static uint32_t ramdisk_total_sectors = 0;
+static uint8_t ramdisk_enabled = 0;
+
+static void* memset(void* dest, int c, uint32_t n) {
+	uint8_t* d = (uint8_t*)dest;
+	for (uint32_t i = 0; i < n; i++) d[i] = (uint8_t)c;
+	return dest;
+}
+
+static void* memcpy(void* dest, const void* src, uint32_t n) {
+	uint8_t* d = (uint8_t*)dest;
+	const uint8_t* s = (const uint8_t*)src;
+	for (uint32_t i = 0; i < n; i++) d[i] = s[i];
+	return dest;
+}
+
+// Disk I/O fonksiyonları
+int disk_wait() {
+    // Wait for BSY clear with timeout
+    uint32_t attempts = 1000000; // ~some ms depending on CPU
+    while (attempts--) {
+        uint8_t status = inb(0x1F7);
+        if ((status & 0x80) == 0) return 0; // not busy
+    }
+    return -1; // timeout
+}
+
+int disk_read_sector(uint32_t lba, char* buffer) {
+    if (ramdisk_enabled) {
+        if (lba >= ramdisk_total_sectors) return -1;
+        memcpy(buffer, ramdisk_buffer + (lba * 512), 512);
+        return 0;
+    }
+
+    if (disk_wait() != 0) return -1;
+    
+    // LBA ayarla
+    outb(0x1F2, 1); // 1 sector
+    outb(0x1F3, (uint8_t)(lba & 0xFF));
+    outb(0x1F4, (uint8_t)((lba >> 8) & 0xFF));
+    outb(0x1F5, (uint8_t)((lba >> 16) & 0xFF));
+    outb(0x1F6, (uint8_t)(((lba >> 24) & 0x0F) | 0xE0));
+    
+    // Read komutu gönder
+    outb(0x1F7, 0x20);
+    
+    // Wait for data ready with timeout
+    uint32_t attempts = 1000000;
+    while (attempts--) {
+        uint8_t status = inb(0x1F7);
+        if (status & 0x01) { // Error bit
+            return -1; // Error occurred
+        }
+        if (status & 0x08) break; // DRQ ready
+    }
+    if ((inb(0x1F7) & 0x08) == 0) return -1; // timeout
+    
+    // Data oku
+    for (int i = 0; i < 256; i++) {
+        uint16_t data = inw(0x1F0);
+        buffer[i * 2] = data & 0xFF;
+        buffer[i * 2 + 1] = (data >> 8) & 0xFF;
+    }
+    
+    return 0; // Success
+}
+
+int disk_write_sector(uint32_t lba, char* buffer) {
+    if (ramdisk_enabled) {
+        if (lba >= ramdisk_total_sectors) return -1;
+        memcpy(ramdisk_buffer + (lba * 512), buffer, 512);
+        return 0;
+    }
+
+    if (disk_wait() != 0) return -1;
+    
+    // LBA ayarla
+    outb(0x1F2, 1); // 1 sector
+    outb(0x1F3, (uint8_t)(lba & 0xFF));
+    outb(0x1F4, (uint8_t)((lba >> 8) & 0xFF));
+    outb(0x1F5, (uint8_t)((lba >> 16) & 0xFF));
+    outb(0x1F6, (uint8_t)(((lba >> 24) & 0x0F) | 0xE0));
+    
+    // Write komutu gönder
+    outb(0x1F7, 0x30);
+    
+    // Data yaz
+    for (int i = 0; i < 256; i++) {
+        uint16_t data = buffer[i * 2] | (buffer[i * 2 + 1] << 8);
+        outw(0x1F0, data);
+    }
+    
+    // Wait for write completion and check for errors with timeout
+    uint32_t attempts2 = 1000000;
+    while (attempts2--) {
+        uint8_t status = inb(0x1F7);
+        if (status & 0x01) return -1; // error
+        if ((status & 0x80) == 0x80) continue; // busy
+        else break;
+    }
+    if ((inb(0x1F7) & 0x80) != 0) return -1; // timeout still busy
+    
+    return 0; // Success
+}
+
+// --- ISO9660 minimal reader from RAM overlay ---
+static int iso_read_block2048(uint32_t lba2048, char* out2048) {
+    // Bypass RAM overlay to read hardware when needed
+    uint8_t prev = ramdisk_enabled;
+    ramdisk_enabled = 0;
+    // Prefer ATAPI 2048-byte read
+    if (atapi_read_block_2048(lba2048, out2048) == 0) { ramdisk_enabled = prev; return 0; }
+    // Fallback: 4 x 512 ATA sectors
+    for (int i = 0; i < 4; i++) {
+        if (disk_read_sector(lba2048 * 4 + i, out2048 + i * 512) != 0) { ramdisk_enabled = prev; return -1; }
+    }
+    ramdisk_enabled = prev;
+    return 0;
+}
+
+static int iso_get_volume_size_blocks(uint32_t* out_blocks2048) {
+    char pvd[2048];
+    if (iso_read_block2048(16, pvd) != 0) return -1;
+    if ((unsigned char)pvd[0] != 0x01 || pvd[1] != 'C' || pvd[2] != 'D' || pvd[3] != '0' || pvd[4] != '0' || pvd[5] != '1') return -1;
+    // Volume Space Size at offset 80 (both-endian). Use little-endian bytes 80..83
+    uint32_t vss = (uint32_t)(uint8_t)pvd[80] | ((uint32_t)(uint8_t)pvd[81] << 8) | ((uint32_t)(uint8_t)pvd[82] << 16) | ((uint32_t)(uint8_t)pvd[83] << 24);
+    if (vss == 0) return -1;
+    *out_blocks2048 = vss;
+    return 0;
+}
+
+typedef struct { uint32_t lba; uint32_t size; } iso_extent;
+
+static int iso_get_root(iso_extent* out) {
+    char pvd[2048];
+    if (iso_read_block2048(16, pvd) != 0) return -1;
+    if ((unsigned char)pvd[0] != 0x01 || pvd[1] != 'C' || pvd[2] != 'D' || pvd[3] != '0' || pvd[4] != '0' || pvd[5] != '1') return -1;
+    unsigned char* rr = (unsigned char*)(pvd + 156);
+    if (rr[0] < 34) return -1;
+    out->lba = (uint32_t)rr[2] | ((uint32_t)rr[3] << 8) | ((uint32_t)rr[4] << 16) | ((uint32_t)rr[5] << 24);
+    out->size = (uint32_t)rr[10] | ((uint32_t)rr[11] << 8) | ((uint32_t)rr[12] << 16) | ((uint32_t)rr[13] << 24);
+    return 0;
+}
+
+static int iso_find_in_dir(iso_extent dir, const char* name, iso_extent* out, int* is_dir) {
+    uint32_t blocks = (dir.size + 2047) / 2048;
+    for (uint32_t b=0;b<blocks;b++) {
+        char blk[2048]; if (iso_read_block2048(dir.lba + b, blk) != 0) return -1;
+        uint32_t off = 0; while (off < 2048) {
+            uint8_t len = (uint8_t)blk[off + 0]; if (len == 0) break;
+            unsigned char* dr = (unsigned char*)(blk + off);
+            uint8_t flags = dr[25];
+            uint8_t fi_len = dr[32]; const char* fi = (const char*)(dr + 33);
+            if (!(fi_len == 1 && (fi[0] == 0 || fi[0] == 1))) {
+                // trim ;1
+                char nm[64]; int nlen=(fi_len<63)?fi_len:63; for (int k=0;k<nlen;k++) nm[k]=fi[k]; nm[nlen]=0; for (int k=0;k<nlen;k++) if (nm[k]==';'){ nm[k]=0; break; }
+                // Strip trailing dot (ISO 9660 Level 1 adds dots for files without extensions)
+                int nm_len = strlen_local(nm);
+                if (nm_len > 0 && nm[nm_len-1] == '.') nm[nm_len-1] = 0; nm_len = strlen_local(nm);
+                // Strip trailing dot from searched name too
+                char name_no_dot[64]; int name_len = strlen_local(name);
+                for (int k=0; k<name_len && k<63; k++) name_no_dot[k] = name[k];
+                name_no_dot[name_len] = 0;
+                if (name_len > 0 && name_no_dot[name_len-1] == '.') name_no_dot[name_len-1] = 0;
+                name_len = strlen_local(name_no_dot);
+                // Use case-insensitive comparison for ISO lookup (ISO 9660 stores uppercase)
+                if (nm_len == name_len && strncmp_case_insensitive(nm, name_no_dot, nm_len)==0) {
+                    out->lba = (uint32_t)dr[2] | ((uint32_t)dr[3] << 8) | ((uint32_t)dr[4] << 16) | ((uint32_t)dr[5] << 24);
+                    out->size= (uint32_t)dr[10]| ((uint32_t)dr[11]<<8)| ((uint32_t)dr[12]<<16)| ((uint32_t)dr[13]<<24);
+                    *is_dir = (flags & 0x02) ? 1 : 0;
+                    return 0;
+                }
+            }
+            off += len;
+        }
+    }
+    return -1;
+}
+
+static int iso_lookup_path(const char* path, iso_extent* out, int* is_dir) {
+    iso_extent cur; if (iso_get_root(&cur)!=0) return -1; int dirflag=1; if (path[0]!='/') return -1; const char* p=path+1; if (*p==0){ *out=cur; *is_dir=1; return 0; }
+    char token[64]; while (*p) {
+        int t=0; while (*p && *p!='/') { if (t<63) token[t++]=*p; p++; } token[t]=0; if (*p=='/') p++;
+        iso_extent next; int next_is_dir=0; if (iso_find_in_dir(cur, token, &next, &next_is_dir)!=0) return -1; cur=next; dirflag=next_is_dir;
+    }
+    *out=cur; *is_dir=dirflag; return 0;
+}
+
+// String fonksiyonları
+static char* strchr(const char* str, char c) {
+    while (*str != '\0') {
+        if (*str == c) return (char*)str;
+        str++;
+    }
+    return 0;
+}
+
+// Disk test function
+int fs_disk_test() {
+    char test_buffer[512];
+    char test_data[512];
+    for (int i = 0; i < 512; i++) test_data[i] = i & 0xFF;
+    // Test write
+    if (disk_write_sector(10, test_data) != 0) {
+        print("Disk write test failed\n");
+        return -1;
+    }
+    // Test read
+    if (disk_read_sector(10, test_buffer) != 0) {
+        print("Disk read test failed\n");
+        return -1;
+    }
+    // Verify data
+    for (int i = 0; i < 512; i++) {
+        if (test_buffer[i] != test_data[i]) {
+            print("Disk data verification failed\n");
+            return -1;
+        }
+    }
+    print("Disk I/O test passed\n");
+    return 0;
+}
+
+#define FS_SECTOR_START 1000
+#define FS_SECTOR_COUNT 8 // 8 sektör x 512 byte = 4096 byte
+
+// Prototipler
+static int fs_read_header(struct fs_header* header);
+static int fs_write_header(const struct fs_header* header);
+
+// Ensure TinyFS header exists in RAM image
+static void fs_ensure_header_initialized() {
+    struct fs_header header;
+    if (fs_read_header(&header) != 0 || header.magic != FS_MAGIC) {
+        for (int i = 0; i < sizeof(struct fs_header); i++) ((char*)&header)[i] = 0;
+        header.magic = FS_MAGIC;
+        header.num_files = 1;
+        strcpy(header.files[0].name, "root");
+        strcpy(header.files[0].path, "/");
+        header.files[0].size = 0;
+        header.files[0].offset = 0;
+        header.files[0].used = 1;
+        header.files[0].is_directory = 1;
+        fs_write_header(&header);
+    }
+}
+
+// RAMDISK API
+void ramdisk_init(uint32_t total_sectors) {
+    if (ramdisk_enabled) return;
+    uint32_t bytes = total_sectors * 512;
+    ramdisk_buffer = (uint8_t*)kmalloc(bytes);
+    if (ramdisk_buffer) {
+        ramdisk_total_sectors = total_sectors;
+        memset(ramdisk_buffer, 0, bytes);
+        ramdisk_enabled = 1;
+        print("RAM disk enabled (");
+        // Print size
+        char mbuf[16]; int pos = 0; uint32_t v = bytes / (1024*1024); 
+        if (v == 0) { mbuf[pos++] = '0'; } else { 
+            char rev[16]; int rp = 0; 
+            while (v > 0) { rev[rp++] = '0' + (v % 10); v /= 10; } 
+            while (rp--) mbuf[pos++] = rev[rp]; 
+        } 
+        mbuf[pos] = 0; 
+        print(mbuf); print("MB)\n");
+    } else {
+        ramdisk_enabled = 0;
+        print("RAM disk allocation failed\n");
+    }
+}
+
+void ramdisk_init_auto() {
+    if (ramdisk_enabled) return;
+    // Try sizes from 64MB down to 2MB (reduced from 256MB max)
+    const uint32_t try_sizes_mb[] = {64, 32, 16, 8, 4, 2};
+    for (unsigned i = 0; i < sizeof(try_sizes_mb)/sizeof(try_sizes_mb[0]); i++) {
+        uint32_t sectors = (try_sizes_mb[i] * 1024 * 1024) / 512;
+        ramdisk_init(sectors);
+        if (ramdisk_enabled) {
+            print("RAM disk size: ");
+            // print MB value
+            char mbuf[8]; int pos = 0; uint32_t v = try_sizes_mb[i]; if (v == 0) mbuf[pos++] = '0'; else { char rev[8]; int rp = 0; while (v > 0) { rev[rp++] = '0' + (v % 10); v /= 10; } while (rp--) mbuf[pos++] = rev[rp]; } mbuf[pos] = 0; print(mbuf); print("MB\n");
+            return;
+        }
+    }
+    print("ERROR: Could not allocate any ramdisk size\n");
+}
+
+// Simple disk I/O probe - check if we can read a sector without hanging
+static int disk_probe() {
+    // Quick test: try to read sector 0 with short timeout
+    char test_buf[512];
+    uint32_t attempts = 10000; // Very short timeout
+    
+    if (disk_wait() != 0) return 0; // Disk seems unresponsive
+    
+    // Try a quick read command
+    outb(0x1F2, 1);
+    outb(0x1F3, 0);
+    outb(0x1F4, 0);
+    outb(0x1F5, 0);
+    outb(0x1F6, 0xE0);
+    outb(0x1F7, 0x20);
+    
+    // Short probe window
+    while (attempts--) {
+        uint8_t status = inb(0x1F7);
+        if (status & 0x01) return 0; // Error immediately
+        if (status & 0x08) return 1; // DRQ set = disk responded!
+    }
+    return 0; // No response = no disk
+}
+
+void ramdisk_preload_from_lba(uint32_t start_lba, uint32_t sector_count) {
+    if (!ramdisk_enabled) return;
+    if (sector_count > ramdisk_total_sectors) sector_count = ramdisk_total_sectors;
+
+    // Pre-read our tiny filesystem header directly from disk to map sectors to file names
+    struct fs_header header_snapshot;
+    {
+        char hdrbuf[4096];
+        uint8_t prev = ramdisk_enabled;
+        ramdisk_enabled = 0;
+        int hdr_ok = 1;
+        for (int i = 0; i < FS_SECTOR_COUNT; i++) {
+            if (disk_read_sector(FS_SECTOR_START + i, hdrbuf + i * 512) != 0) { hdr_ok = 0; break; }
+        }
+        ramdisk_enabled = prev;
+        if (hdr_ok) {
+            for (int i = 0; i < sizeof(struct fs_header); i++) ((char*)&header_snapshot)[i] = hdrbuf[i];
+        } else {
+            for (int i = 0; i < sizeof(struct fs_header); i++) ((char*)&header_snapshot)[i] = 0;
+        }
+    }
+
+    char tmp[512];
+    uint32_t total = sector_count;
+    uint32_t last_shown_percent = 101; // force initial print
+    const uint32_t bar_width = 30;
+    const char spinner_chars[4] = {'|','/','-','\\'};
+    uint32_t spin_idx = 0;
+    int last_file_index = -2; // track file index to avoid spamming same name
+    uint32_t read_errors = 0;
+    uint32_t max_errors = 10; // stop after 10 consecutive errors
+
+    print("Copying system image to RAM (read-only ISO -> RAM, RW enabled)\n");
+
+    #define BATCH_SIZE 512  // Read 16 sectors at a time = 8KB chunks (smaller batches for reliability)
+    for (uint32_t i = 0; i < sector_count && (start_lba + i) < ramdisk_total_sectors; ) {
+        uint32_t batch_count = BATCH_SIZE;
+        if ((start_lba + i + batch_count) > ramdisk_total_sectors) {
+            batch_count = ramdisk_total_sectors - (start_lba + i);
+        }
+        if ((i + batch_count) > sector_count) {
+            batch_count = sector_count - i;
+        }
+        
+        // Read batch of sectors
+        uint32_t successful_in_batch = 0;
+        for (uint32_t j = 0; j < batch_count; j++) {
+            uint8_t prev = ramdisk_enabled;
+            ramdisk_enabled = 0;
+            int r = disk_read_sector(start_lba + i + j, tmp);
+            ramdisk_enabled = prev;
+            if (r != 0) {
+                // Attempt ATAPI: read containing 2048 block and extract 512 segment
+                char blk2048[2048];
+                uint32_t lba2048 = (start_lba + i + j) / 4;
+                uint32_t off = ((start_lba + i + j) % 4) * 512;
+                if (atapi_read_block_2048(lba2048, blk2048) == 0) {
+                    for (int b = 0; b < 512; b++) tmp[b] = blk2048[off + b];
+                    r = 0;
+                }
+            }
+            if (r != 0) {
+                read_errors++;
+                // Zero fill on error instead of stopping
+                for (int b = 0; b < 512; b++) tmp[b] = 0;
+            } else {
+                read_errors = 0; // reset error counter on successful read
+                successful_in_batch++;
+            }
+            // Copy into RAM buffer
+            memcpy(ramdisk_buffer + ((start_lba + i + j) * 512), tmp, 512);
+        }
+        
+        i += batch_count;
+
+        // Update progress ONLY every 5%
+        uint32_t done = i;
+        uint32_t percent = (done * 100) / total;
+        uint32_t filled = (percent * bar_width) / 100;
+        uint32_t bytes_done = done * 512;
+        uint32_t bytes_total = total * 512;
+
+        // Print progress every 5% or at end
+        if (percent >= last_shown_percent + 5 || done == total) {
+            last_shown_percent = percent;
+            // Build bar
+            char bar[31];
+            for (uint32_t j = 0; j < bar_width; j++) bar[j] = (j < filled) ? '#' : '-';
+            bar[bar_width] = '\0';
+
+            // Print a single progress line
+            print("  [");
+            print(bar);
+            print("] ");
+            // Percent
+            char pbuf[4]; int p = percent; int ppos = 0; if (p == 0) pbuf[ppos++] = '0'; else { char rev[4]; int rp = 0; while (p > 0 && rp < 3) { rev[rp++] = '0' + (p % 10); p /= 10; } while (rp--) pbuf[ppos++] = rev[rp]; } pbuf[ppos] = 0; print(pbuf); print("%  ");
+            // Bytes done / total in MB
+            char nbuf[16];
+            uint32_t mb_done = bytes_done / (1024*1024); uint32_t mb_total = bytes_total / (1024*1024);
+            int npos = 0; if (mb_done == 0) nbuf[npos++] = '0'; else { char revn[16]; int rn = 0; while (mb_done > 0) { revn[rn++] = '0' + (mb_done % 10); mb_done /= 10; } while (rn--) nbuf[npos++] = revn[rn]; } nbuf[npos] = 0; print(nbuf);
+            print("MB/");
+            npos = 0; if (mb_total == 0) nbuf[npos++] = '0'; else { char revt[16]; int rt = 0; while (mb_total > 0) { revt[rt++] = '0' + (mb_total % 10); mb_total /= 10; } while (rt--) nbuf[npos++] = revt[rt]; } nbuf[npos] = 0; print(nbuf);
+            print("MB\n");
+        }
+        
+        if (read_errors > 500) {
+            print_color("[WARNING] Many read errors detected, but continuing...\n", VGA_COLOR_YELLOW);
+            read_errors = 0; // reset counter and keep going
+        }
+    }
+
+    print_color("RAM preload complete. Operating on RAM (no writes to ISO)\n", VGA_COLOR_LIGHT_GREEN);
+}
+
+void fs_init() {
+    // Initialize a large RAM disk automatically
+    ramdisk_init_auto();
+    if (!ramdisk_enabled) {
+        // Fallback minimal size 4MB
+        ramdisk_init(8192);
+    }
+
+    // Determine ISO size (in 2048-byte blocks) via PVD
+    uint32_t iso_blocks = 0;
+    if (iso_get_volume_size_blocks(&iso_blocks) != 0) {
+        // If ISO size detection failed, fall back to using full RAM disk size
+        iso_blocks = ramdisk_total_sectors / 4;
+    }
+    // Convert to 512-byte sectors and cap to RAM disk capacity
+    uint32_t clone_sectors = iso_blocks * 4;
+    if (clone_sectors > ramdisk_total_sectors) clone_sectors = ramdisk_total_sectors;
+
+    // Clone disk (starting at LBA 0) into RAM
+    ramdisk_preload_from_lba(0, clone_sectors);
+
+    // Disk I/O test
+    if (fs_disk_test() != 0) {
+        print("Disk I/O test failed, filesystem may not work properly\n");
+    }
+
+    // TinyFS disabled: we operate directly on cloned RAM image; no on-disk header initialization
+}
+
+// Yardımcı fonksiyon: dosya sistemini diskten oku
+static int fs_read_header(struct fs_header* header) {
+    char buffer[4096];
+    for (int i = 0; i < FS_SECTOR_COUNT; i++) {
+        if (disk_read_sector(FS_SECTOR_START + i, buffer + i * 512) != 0)
+            return -1;
+    }
+    // header'ı kopyala
+    for (int i = 0; i < sizeof(struct fs_header); i++)
+        ((char*)header)[i] = buffer[i];
+    return 0;
+}
+
+// Yardımcı fonksiyon: dosya sistemini diske yaz
+static int fs_write_header(const struct fs_header* header) {
+    char buffer[4096] = {0};
+    for (int i = 0; i < sizeof(struct fs_header); i++)
+        buffer[i] = ((const char*)header)[i];
+    for (int i = 0; i < FS_SECTOR_COUNT; i++) {
+        if (disk_write_sector(FS_SECTOR_START + i, buffer + i * 512) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+int fs_create_directory(char* path) {
+    fs_ensure_header_initialized();
+    struct fs_header header;
+    if (fs_read_header(&header) != 0) return -1;
+    if (header.num_files >= MAX_FILES) return -1;
+    int slot = -1;
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (!header.files[i].used) { slot = i; break; }
+    }
+    if (slot == -1) return -3;
+    char* name = path;
+    for (int i = 0; path[i] != '\0'; i++) if (path[i] == '/') name = &path[i + 1];
+    if (name[0] == '\0') name = "root";
+    strcpy(header.files[slot].name, name);
+    strcpy(header.files[slot].path, path);
+    header.files[slot].size = 0;
+    header.files[slot].offset = 0;
+    header.files[slot].used = 1;
+    header.files[slot].is_directory = 1;
+    header.num_files++;
+    if (fs_write_header(&header) != 0) return -4;
+    return 0;
+}
+
+int fs_create_file(char* path, char* data, uint32_t size) {
+    fs_ensure_header_initialized();
+    struct fs_header header;
+    if (fs_read_header(&header) != 0) return -1;
+    if (header.num_files >= MAX_FILES) return -1;
+    if (size > MAX_FILE_SIZE) return -2;
+    int slot = -1;
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (!header.files[i].used) { slot = i; break; }
+    }
+    if (slot == -1) return -3;
+    char* name = path;
+    for (int i = 0; path[i] != '\0'; i++) if (path[i] == '/') name = &path[i + 1];
+    if (name[0] == '\0') name = "file";
+    strcpy(header.files[slot].name, name);
+    strcpy(header.files[slot].path, path);
+    header.files[slot].size = size;
+    header.files[slot].offset = sizeof(struct fs_header) + slot * MAX_FILE_SIZE;
+    header.files[slot].used = 1;
+    header.files[slot].is_directory = 0;
+    // Dosya verisini yaz
+    char buffer[4096] = {0};
+    for (int i = 0; i < sizeof(struct fs_header); i++) buffer[i] = ((char*)&header)[i];
+    for (uint32_t i = 0; i < size; i++) buffer[header.files[slot].offset + i] = data[i];
+    for (int i = 0; i < FS_SECTOR_COUNT; i++) {
+        if (disk_write_sector(FS_SECTOR_START + i, buffer + i * 512) != 0) return -4;
+    }
+    return 0;
+}
+
+// Use ISO for read when not found in tiny FS
+int fs_read_file(char* path, char* buffer, uint32_t max_size) {
+    // First, try tiny FS
+    char diskbuf[4096];
+    for (int i = 0; i < FS_SECTOR_COUNT; i++) {
+        if (disk_read_sector(FS_SECTOR_START + i, diskbuf + i * 512) != 0) break;
+    }
+    struct fs_header* header = (struct fs_header*)diskbuf;
+    if (header->magic == FS_MAGIC) {
+        for (int i = 0; i < MAX_FILES; i++) {
+            if (header->files[i].used && strcmp(header->files[i].path, path) == 0) {
+                uint32_t size = header->files[i].size;
+                if (size > max_size) size = max_size;
+                char* file_data = diskbuf + header->files[i].offset;
+                for (uint32_t j = 0; j < size; j++) buffer[j] = file_data[j];
+                return size;
+            }
+        }
+    }
+    // Fallback to ISO data in RAM
+    iso_extent e; int isdir=0; if (iso_lookup_path(path, &e, &isdir)!=0 || isdir) return -1;
+    uint32_t remaining = e.size; if (remaining > max_size) remaining = max_size;
+    uint32_t blocks = (remaining + 2047) / 2048; uint32_t copied=0;
+    for (uint32_t b=0;b<blocks;b++) { char blk[2048]; if (iso_read_block2048(e.lba + b, blk)!=0) break; uint32_t tocpy = (remaining - copied > 2048) ? 2048 : (remaining - copied); for (uint32_t i=0;i<tocpy;i++) buffer[copied+i]=blk[i]; copied += tocpy; }
+    return copied>0 ? (int)copied : -1;
+}
+
+int fs_get_file_size(char* path) {
+    // Check TinyFS first
+    struct fs_header header;
+    if (fs_read_header(&header) == 0 && header.magic == FS_MAGIC) {
+        for (int i = 0; i < MAX_FILES; i++) {
+            if (header.files[i].used && strcmp(header.files[i].path, path) == 0) {
+                return (int)header.files[i].size;
+            }
+        }
+    }
+    
+    // Fallback to ISO image
+    iso_extent e;
+    int isdir = 0;
+    if (iso_lookup_path(path, &e, &isdir) == 0 && !isdir) {
+        return (int)e.size;
+    }
+    
+    return -1;
+}
+
+int fs_write_file(char* name, char* data, uint32_t size) {
+    fs_delete_file(name, 0);
+    return fs_create_file(name, data, size);
+}
+
+int fs_delete_file(const char* path, int recursive) {
+    struct fs_header header;
+    if (fs_read_header(&header) != 0) return -1;
+    int found = 0;
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (header.files[i].used && strcmp(header.files[i].path, path) == 0) {
+            found = 1;
+            // Eğer dizin ve recursive ise, altındaki her şeyi sil
+            if (header.files[i].is_directory && recursive) {
+                // Altındaki dosya ve dizinleri bul
+                int pathlen = strlen(path);
+                for (int j = 0; j < MAX_FILES; j++) {
+                    if (header.files[j].used && strncmp(header.files[j].path, path, pathlen) == 0 && strcmp(header.files[j].path, path) != 0) {
+                        // Alt eleman: recursive sil
+                        fs_delete_file(header.files[j].path, 1);
+                    }
+                }
+            } else if (header.files[i].is_directory && !recursive) {
+                // Dizin ve recursive değilse, altı boş mu kontrol et
+                int pathlen = strlen(path);
+                for (int j = 0; j < MAX_FILES; j++) {
+                    if (header.files[j].used && strncmp(header.files[j].path, path, pathlen) == 0 && strcmp(header.files[j].path, path) != 0) {
+                        // Altında dosya/dizin var, silme
+                        return -3;
+                    }
+                }
+            }
+            header.files[i].used = 0;
+            header.num_files--;
+            if (fs_write_header(&header) != 0) return -2;
+            return 0;
+        }
+    }
+    if (!found) return -1;
+    return 0;
+}
+
+static void iso_print_tree_recursive(iso_extent dir, char* prefix, int prefix_len, int depth) {
+    if (depth > 16) return;
+    static char blk[2048];
+    uint32_t blocks = (dir.size + 2047) / 2048;
+    for (uint32_t b=0;b<blocks;b++) {
+        if (iso_read_block2048(dir.lba + b, blk)!=0) break; uint32_t off=0; while (off<2048) {
+            uint8_t len=(uint8_t)blk[off+0]; if (len==0) break; unsigned char* dr=(unsigned char*)(blk+off); uint8_t flags=dr[25]; uint8_t fi_len=dr[32]; const char* fi=(const char*)(dr+33);
+            if (!(fi_len==1&&(fi[0]==0||fi[0]==1))) {
+                char name[64]; int nlen=(fi_len<63)?fi_len:63; for(int k=0;k<nlen;k++) name[k]=fi[k]; name[nlen]=0; for(int k=0;k<nlen;k++) if (name[k]==';'){ name[k]=0; break;}
+                char pathbuf[256]; int pos=0; for(int i=0;i<prefix_len && i<250;i++) pathbuf[pos++]=prefix[i]; if (pos==0 || pathbuf[pos-1]!='/') pathbuf[pos++]='/'; for(int i=0;i<nlen && pos<255;i++) pathbuf[pos++]=name[i]; pathbuf[pos]=0;
+                print(pathbuf); print("\n");
+                if (flags & 0x02) {
+                    iso_extent next; next.lba = (uint32_t)dr[2] | ((uint32_t)dr[3] << 8) | ((uint32_t)dr[4] << 16) | ((uint32_t)dr[5] << 24);
+                    next.size = (uint32_t)dr[10]| ((uint32_t)dr[11]<<8)| ((uint32_t)dr[12]<<16)| ((uint32_t)dr[13]<<24);
+                    char newprefix[256]; int np=0; for(int i=0;i<pos && i<255;i++) newprefix[np++]=pathbuf[i]; newprefix[np]=0; iso_print_tree_recursive(next, newprefix, np, depth+1);
+                }
+            }
+            off+=len;
+        }
+    }
+}
+
+static void iso_list_dir_extent(iso_extent dir) {
+    uint32_t blocks = (dir.size + 2047) / 2048;
+    for (uint32_t b=0;b<blocks;b++) {
+        char blk[2048]; if (iso_read_block2048(dir.lba + b, blk)!=0) break; uint32_t off=0; while (off<2048) {
+            uint8_t len=(uint8_t)blk[off+0]; if (len==0) break; unsigned char* dr=(unsigned char*)(blk+off); uint8_t flags=dr[25]; uint8_t fi_len=dr[32]; const char* fi=(const char*)(dr+33);
+            if (!(fi_len==1&&(fi[0]==0||fi[0]==1))) { char name[64]; int nlen=(fi_len<63)?fi_len:63; for(int k=0;k<nlen;k++) name[k]=fi[k]; name[nlen]=0; for(int k=0;k<nlen;k++) if (name[k]==';'){ name[k]=0; break;} print("  "); if (flags&0x02) print("[DIR] "); else print("[FILE] "); print(name); print("\n"); }
+            off+=len; }
+    }
+}
+
+void fs_list_all() {
+    print("--- ISO contents ---\n");
+    iso_extent root; if (iso_get_root(&root)==0) { char prefix[2] = "/"; iso_print_tree_recursive(root, prefix, 1, 0); }
+    print("--- TinyFS contents ---\n");
+    char diskbuf[4096]; for (int i=0;i<FS_SECTOR_COUNT;i++) { disk_read_sector(FS_SECTOR_START + i, diskbuf + i*512); }
+    struct fs_header* header=(struct fs_header*)diskbuf;
+    if (header->magic == FS_MAGIC) {
+        for (int i=0;i<MAX_FILES;i++) {
+            if (!header->files[i].used) continue;
+            print(header->files[i].path);
+            if (!header->files[i].is_directory) {
+                print(" (");
+                char size_str[16]; int size=header->files[i].size; int pos=0; if (size==0) size_str[pos++]='0'; else { while (size>0){ size_str[pos++]='0'+(size%10); size/=10; } } for (int j=pos-1;j>=0;j--) putchar(size_str[j]); print(" bytes)");
+            }
+            print("\n");
+        }
+    }
+}
+
+int fs_any_exists(char* path) {
+    // Check TinyFS
+    struct fs_header header; if (fs_read_header(&header) == 0 && header.magic == FS_MAGIC) {
+        for (int i=0;i<MAX_FILES;i++) if (header.files[i].used && strcmp(header.files[i].path, path) == 0) return 1;
+    }
+    // Check ISO
+    iso_extent e; int isdir=0; if (iso_lookup_path(path, &e, &isdir)==0) return 1;
+    return 0;
+}
+
+int fs_any_is_directory(char* path) {
+    // TinyFS
+    struct fs_header header; if (fs_read_header(&header) == 0 && header.magic == FS_MAGIC) {
+        for (int i=0;i<MAX_FILES;i++) if (header.files[i].used && strcmp(header.files[i].path, path) == 0) return header.files[i].is_directory;
+    }
+    // ISO
+    iso_extent e; int isdir=0; if (iso_lookup_path(path, &e, &isdir)==0) return isdir;
+    return 0;
+}
+
+void fs_list_files(char* current_path) {
+    // If path exists in ISO and is a directory, list ISO contents
+    iso_extent e; int e_is_dir = 0; int iso_ok = (iso_lookup_path(current_path, &e, &e_is_dir) == 0 && e_is_dir);
+    if (iso_ok) {
+        print("Files in "); print(current_path); print(":\n");
+        iso_list_dir_extent(e);
+    } else if (current_path && current_path[0] == '/' && current_path[1] == '\0') {
+        // List ISO root if path is exactly '/'
+        iso_extent root; if (iso_get_root(&root)==0) { print("Files in /:\n"); iso_list_dir_extent(root); }
+    } else {
+        print("Files in "); print(current_path); print(":\n");
+    }
+
+    // Also list TinyFS entries within this path (direct children)
+    char diskbuf[4096]; for (int i=0;i<FS_SECTOR_COUNT;i++) { disk_read_sector(FS_SECTOR_START + i, diskbuf + i*512); }
+    struct fs_header* header=(struct fs_header*)diskbuf;
+    int path_len = strlen(current_path);
+    char norm_path[64]; strcpy(norm_path, current_path);
+    if (!(path_len == 1 && current_path[0] == '/') && current_path[path_len-1] != '/') { norm_path[path_len] = '/'; norm_path[path_len+1] = 0; path_len++; }
+
+    for (int i=0;i<MAX_FILES;i++) {
+        if (!header->files[i].used) continue;
+        char* fpath = header->files[i].path;
+        if (strncmp(fpath, norm_path, path_len) == 0) {
+            char* rest = fpath + path_len;
+            char* next_slash = strchr(rest, '/');
+            if (!next_slash || next_slash[1] == 0) {
+                print("  "); if (header->files[i].is_directory) print("[DIR] "); else print("[FILE] ");
+                print(header->files[i].name);
+                if (!header->files[i].is_directory) {
+                    print(" ("); char size_str[16]; int size=header->files[i].size; int pos=0; if (size==0) size_str[pos++]='0'; else { while (size>0){ size_str[pos++]='0'+(size%10); size/=10; } } for(int j=pos-1;j>=0;j--) putchar(size_str[j]); print(" bytes)");
+                }
+                print("\n");
+            }
+        }
+    }
+}
+
+
