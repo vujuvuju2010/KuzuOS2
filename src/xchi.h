@@ -153,7 +153,8 @@ typedef struct {
     u32 bulk_in_enq_idx, bulk_in_cycle;
     u32 bulk_out_enq_idx, bulk_out_cycle;
     u32 msc_tag;
-
+    u16 vendor_id, product_id;
+    u32 usb_bus;              // for lsusb 
     usb_device_t* generic; // link back to the usb.c-level device, once class/enum is done
 } xchi_device_t;
 
@@ -164,4 +165,5 @@ void xchi_poll(void); // call from usb_poll() alongside the EHCI/keyboard poll
 int xchi_enumerate_port(unsigned int port);
 int xchi_control_transfer(xchi_device_t* xdev, usb_setup_t* setup, void* data, unsigned int len, int is_in);
 int xchi_bulk_transfer(xchi_device_t* xdev, void* buf, unsigned int len, int is_in);
+extern xchi_device_t xchi_devices[MAX_XCHI_DEVICES]; // for lsusb in syscall.c check out SYS_LSUSB for it
 #endif

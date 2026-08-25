@@ -11,7 +11,7 @@
 #include "kuzulib/fs/vfs.h"   
 #include "lsusb.h"
 #include "usb.h"
-
+#include "xchi.h"
 #ifndef NULL
 #define NULL ((void*)0)
 #endif
@@ -356,11 +356,10 @@ int32_t handle_syscall(uint64_t syscall_num,
             return 0;
         }
 
-        case SYS_LSUSB: {
+case SYS_LSUSB: {
     usb_lsusb_entry_t *out = (usb_lsusb_entry_t *)arg1;
     int max = (int)arg2;
     int count = 0;
-
     for (int i = 0; i < MAX_USB_DEVICES && count < max; i++) {
         if (!usb_devices[i].used || !usb_devices[i].connected) continue;
         out[count].addr       = usb_devices[i].addr;
@@ -372,8 +371,19 @@ int32_t handle_syscall(uint64_t syscall_num,
         out[count].usb_bus        = usb_devices[i].usb_bus;
         count++;
     }
+    for (int i = 0; i < MAX_XCHI_DEVICES && count < max; i++) {
+        if (!xchi_devices[i].used) continue;
+        out[count].addr       = xchi_devices[i].slot_id;
+        out[count].vendor_id  = xchi_devices[i].vendor_id;
+        out[count].product_id = xchi_devices[i].product_id;
+        out[count].class      = xchi_devices[i].class;
+        out[count].subclass   = xchi_devices[i].subclass;
+        out[count].port       = xchi_devices[i].port;
+        out[count].usb_bus        = xchi_devices[i].usb_bus;
+        count++;
+    }
     return count;
-}
+} 
 
         /* ── Networking ──────────────────────────────────────── */
         case SYS_NET_GETINFO: {

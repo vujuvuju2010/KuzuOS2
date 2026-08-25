@@ -23,7 +23,7 @@ static unsigned int xchi_ports = 0;
 static unsigned int xchi_max_sluts = 0;
 
 static unsigned int xchi_context_size = XCHI_CTX_SIZE; //32 unless CZS says fuhnaw
-						       //
+static unsigned int xchi_bus = 0;
 static trb_t* event_ring = 0;
 static u32 cmd_cycle = 1;
 static trb_t* cmd_ring = 0;
@@ -38,7 +38,7 @@ static void xchi_handle_connect(unsigned int port);
 static void xchi_handle_disconnect(unsigned int port);
 
 
-static xchi_device_t xchi_devices[MAX_XCHI_DEVICES];
+xchi_device_t xchi_devices[MAX_XCHI_DEVICES]; // cant be static since used in syscall.c for lsusb of such
 
 static inline u32 xchi_cap_read32(unsigned int reg){
 	return *((volatile u32*)(xchi_base + reg));
@@ -373,6 +373,7 @@ static int xchi_enable_and_address(unsigned int port, u32 speed, xchi_device_t**
     xdev->port = port;
     xdev->speed = speed;
     xdev->max_packet_size = xchi_default_max_packet(speed);
+    xdev->usb_bus = xchi_bus;
     xdev->route_string = 0; // direct root-hub attach; hub support would need real routing
  
     /* output device context - controller writes slot/ep state here after Address Device */
@@ -565,13 +566,11 @@ int xchi_enumerate_port(unsigned int port){
         return -1;
     }
  
-    u16 vendor_id  = *(u16*)(desc + 8);
-    u16 product_id = *(u16*)(desc + 10);
-    z_printf("XCHI DEVICE slot=%d vid=0x%x pid=0x%x speed=%d\n", xdev->slot_id, vendor_id, product_id, speed);
+    xdev -> vendor_id  = *(u16*)(desc + 8);
+    xdev -> product_id = *(u16*)(desc + 10);
+    z_printf("XCHI DEVICE slot=%d vid=0x%x pid=0x%x speed=%d\n", xdev->slot_id, xdev -> vendor_id, xdev -> product_id, speed);
  
-    /* TODO next: GET_DESCRIPTOR(config) to find bulk endpoints (same parsing shape as
-       usb_parse_endpoints() in usb.c), Configure Endpoint command to activate them,
-       then hand off to usbmsc_attach()-equivalent for xHCI mass storage devices. */
+   
  
     return 0;
 }
@@ -624,7 +623,8 @@ static void xchi_setup_dcbaa(void){
 }
  
 void xchi_init(unsigned int bus, unsigned int slot, unsigned int func){
-    print_color("xchi: found controller, bringing it up\n", VGA_COLOR_LIGHT_GREEN);
+        xchi_bus = bus;
+	print_color("xchi: found controller, bringing it up\n", VGA_COLOR_LIGHT_GREEN);
  
     xchi_pci_enable_busmaster((unsigned char)bus, (unsigned char)slot, (unsigned char)func);
  
