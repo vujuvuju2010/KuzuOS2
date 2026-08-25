@@ -8,6 +8,8 @@ written by vujuvuju for KuzuOS2 :)
 #include "keyboardusb.h" // usb keyboard için yeni yazdığımız seksçuvalı//
 #include "keymap_loader.h" // for load_us_keymap
 #include "lsusb.h" // for lsusb app to work and display the bus number yayyy
+#include "xchi.h" // YAYYYYYY SUPPORTED NOW
+
 #define PCI_CONFIG_ADDR  0xCF8 // no idea
 #define PCI_CONFIG_DATA  0xCFC // still no idea
 usb_device_t* usb_alloc_device(void); // just a definition to not fuk shi
@@ -17,7 +19,7 @@ usb_device_t* usb_alloc_device(void); // just a definition to not fuk shi
 unsigned int  echibase; // to hold the adress from bar0
 static unsigned int next_usb_addr = 1; // needs to be here because when its at bottom C compiler moans like a bottom 
 unsigned int caplength; // just init çünkü şuanda echibase halen dutluk 
-
+static int ehci_found = 0;
 unsigned int opbase; //hem echibase hem caplength hala dutluk
 void usbconf(unsigned int addr);
 unsigned int ports = 0;
@@ -76,12 +78,14 @@ void usb_scan(void)// scans usb
                 print_color("i found eine kleine UHCI controller\n", VGA_COLOR_LIGHT_GREEN); // found a uhci controller yayyy
             
                 } else if(prog_if == 0x20){
-
+		
                 print_color("i found eine kleine EHCI controller\n", VGA_COLOR_LIGHT_GREEN); // found a ehci controller yayyy
-            
+                ehci_found = 1; // ts exists so that i dont reset thy ehci unless i do have a bloody ehci
                 } else if(prog_if == 0x30){
 
                 print_color("i found eine kleine XHCI controller\n", VGA_COLOR_LIGHT_GREEN); // found a xhci controller yayyy
+		xchi_init(bus, slot, func);
+		// I SUPPORT XCHI????? I DIDNT KNOW TS BUT SUREEEEEEEE I SUPPOSE
                }
                
             }
@@ -586,6 +590,7 @@ void usb_init(void)
 {
     usb_scan();
 
+    if(ehci_found){
     initechi();
 
     reset_echi();
@@ -597,4 +602,5 @@ void usb_init(void)
     numberOfPorts();
 
     scanports();
+    }
 }

@@ -9,6 +9,16 @@ WRITTEN BY KUZEY AND CLAUDE*/
 #include "../../fatfs/ff.h"
 #include "../../filesystem.h"
 
+// Forward declare ramfs_entry_t structure
+typedef struct {
+    char path[256];
+    char name[64];
+    int is_directory;
+    char *data;
+    uint32_t size;
+    int used;
+} ramfs_entry_t;
+
 static int maxprocess = 16; // changeable via vfs_set_max_mounts syscall
 static int maxfds = 64;
 
@@ -143,6 +153,16 @@ static int console_read(void *buf, uint32_t len){
    ═══════════════════════════════════════════════════════════════ */
 
 static int ramfs_open(struct vfs_node *node, const char *path, int flags){
+    extern int ramfs_exists(const char *path);
+    
+    // Check in-memory ramfs first
+    if (ramfs_exists(path)) {
+        node->offset = 0;
+        node->fs_data = 0;
+        return 0;
+    }
+    
+    // Fall back to disk filesystem
     if(!fs_any_exists((char *)path)) return -1;
     node->offset = 0;
     node->fs_data = 0;
@@ -188,12 +208,45 @@ static int ramfs_close(struct vfs_node *node){
 
 static int ramfs_readdir(struct vfs_node *node, uint32_t index,
                           char *name_out, int *is_dir_out){
+    extern int ramfs_get_entry_by_index_in_dir(const char *dir_path, uint32_t index, char **name, int *is_dir);
+    
+    // First, enumerate in-memory ramfs entries that are children of this directory
+    char *ramfs_name;
+    int ramfs_isdir;
+    if (ramfs_get_entry_by_index_in_dir(node->path, index, &ramfs_name, &ramfs_isdir) == 0) {
+        // Copy name
+        int i = 0;
+        while (ramfs_name[i] && i < 255) {
+            name_out[i] = ramfs_name[i];
+            i++;
+        }
+        name_out[i] = '\0';
+        *is_dir_out = ramfs_isdir;
+        return 1;
+    }
+    
+    // Fall back to disk filesystem
     return fs_readdir_index((char *)node->path, index, name_out, is_dir_out);
 }
 
 static int ramfs_stat(struct mount_entry *mnt, const char *path,
                        uint32_t *size_out, int *is_dir_out){
     (void)mnt;
+    
+    extern int ramfs_exists(const char *path);
+    extern ramfs_entry_t* ramfs_get_entry(const char *path);
+    
+    // Check in-memory ramfs first
+    if (ramfs_exists(path)) {
+        ramfs_entry_t *entry = ramfs_get_entry(path);
+        if (entry) {
+            *is_dir_out = entry->is_directory;
+            *size_out = entry->size;
+            return 0;
+        }
+    }
+    
+    // Fall back to disk filesystem
     if(!fs_any_exists((char *)path)) return -1;
     *is_dir_out = fs_any_is_directory((char *)path);
     if(*is_dir_out){
@@ -642,6 +695,34 @@ int sys_readdir(int fd, uint32_t index, char *name_out, int *is_dir_out){
 
 int sys_stat(const char *path, uint32_t *size_out, int *is_dir_out){
     return vfs_stat(path, size_out, is_dir_out);
+}
+
+/* ── vfs_mkdir ───────────────────────────────────────────── */
+
+int vfs_mkdir(const char *path) {
+    extern void print(const char *);
+    print("[vfs_mkdir] called for ");
+    print(path);
+    print("\n");
+    
+    /* Use in-memory ramfs instead of disk */
+    extern int ramfs_create_directory(const char *path);
+    int result = ramfs_create_directory(path);
+    
+    print("[vfs_mkdir] ramfs_create_directory returned ");
+    if (result == 0) print("OK");
+    else print("FAIL");
+    print("\n");
+    
+    return result;
+}
+
+/* ── vfs_create ──────────────────────────────────────────────── */
+
+int vfs_create(const char *path) {
+    /* Use in-memory ramfs instead of disk */
+    extern int ramfs_create_file(const char *path);
+    return ramfs_create_file(path);
 }
 
 /* close every vfs node a process has open — call on process exit */

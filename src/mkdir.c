@@ -1,62 +1,55 @@
 // mkdir.c - Create directory
-#define SYS_WRITE 4
-#define SYS_MKDIR 39
-#define SYS_EXIT 1
+#define SYS_WRITE   4
+#define SYS_MKDIR   39
+#define SYS_EXIT    1
+#define SYS_GETARGC 260
+#define SYS_GETARGV 261
 
-static inline int syscall1(int num, int arg1) {
-    int ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1));
-    return ret;
+static inline int _sys1(int n, int a) {
+    int r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"b"(a)); return r;
 }
-
-static inline int syscall2(int num, int arg1, int arg2) {
-    int ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1), "c"(arg2));
-    return ret;
-}
-
-static inline int syscall3(int num, int arg1, int arg2, int arg3) {
-    int ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3));
-    return ret;
+static inline int _sys3(int n, int a, int b, int c) {
+    int r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"b"(a),"c"(b),"d"(c)); return r;
 }
 
 static void print(const char* s) {
-    int len = 0;
-    while (s[len]) len++;
-    syscall3(SYS_WRITE, 1, (int)s, len);
+    int len = 0; while (s[len]) len++;
+    _sys3(SYS_WRITE, 1, (int)s, len);
 }
 
-static void parse_args(int* argc_out, char*** argv_out) {
-    unsigned long* stack_ptr;
-    __asm__ volatile("mov %%rsp, %0" : "=r"(stack_ptr));
-    
-    *argc_out = (int)stack_ptr[0];
-    *argv_out = (char**)&stack_ptr[1];
-}
+int _start(void) {
+    char path[256];
 
-int _start() {
-    int argc;
-    char** argv;
-    parse_args(&argc, &argv);
+    print("[mkdir] starting\n");
+    int argc = _sys1(SYS_GETARGC, 0);
     
     if (argc < 2) {
         print("Usage: mkdir <directory>\n");
-        syscall1(SYS_EXIT, 1);
+        _sys1(SYS_EXIT, 1);
+        while(1);
     }
+
+    _sys3(SYS_GETARGV, 1, (int)path, 256);
+
+    print("[mkdir] about to call SYS_MKDIR syscall\n");
     
-    const char* dirname = argv[1];
+    int result = _sys1(SYS_MKDIR, (int)path);
     
-    // Create directory with mode 0755
-    int result = syscall2(SYS_MKDIR, (int)dirname, 0755);
+    print("[mkdir] syscall returned result=");
+    if (result == 0) print("OK");
+    else if (result == -1) print("-1");
+    else print("ERR");
+    print("\n");
     
     if (result < 0) {
         print("mkdir: cannot create directory ");
-        print(dirname);
+        print(path);
         print("\n");
-        syscall1(SYS_EXIT, 1);
+        _sys1(SYS_EXIT, 1);
+        while(1);
     }
-    
-    syscall1(SYS_EXIT, 0);
+
+    print("[mkdir] exiting normally\n");
+    _sys1(SYS_EXIT, 0);
     while(1);
 }

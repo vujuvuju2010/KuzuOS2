@@ -78,6 +78,13 @@ int32_t handle_syscall(uint64_t syscall_num,
             const char *path = (const char *)arg1;
             int flags        = (int)arg2;
 
+            /* Check if O_CREAT is set (0x40) */
+            if (flags & 0x40) {
+                /* Create file if it doesn't exist */
+                extern int vfs_create(const char *path);
+                vfs_create(path);  /* Ignore error if file already exists */
+            }
+
             /* map posix O_* flags to VFS flags */
             int vflags = 0;
             if((flags & 3) == 0 || (flags & 3) == 2) vflags |= VFS_FLAG_READ;
@@ -155,8 +162,29 @@ int32_t handle_syscall(uint64_t syscall_num,
         /* ── SYS_MKDIR ───────────────────────────────────────── */
         case SYS_MKDIR: {
             const char *path = (const char *)arg1;
-            extern int fs_create_directory(char *path);
-            return fs_create_directory((char *)path);
+            
+            print("[SYS_MKDIR] called\n");
+            
+            // Validate user pointer - basic check
+            if (!path || (uint64_t)path < 0x400000) {
+                print("[SYS_MKDIR] invalid pointer\n");
+                return -1;  // Invalid pointer
+            }
+            
+            print("[SYS_MKDIR] path=");
+            print(path);
+            print("\n");
+            
+            /* Use VFS layer to create directory */
+            extern int vfs_mkdir(const char *path);
+            int result = vfs_mkdir(path);
+            
+            print("[SYS_MKDIR] result=");
+            if (result == 0) print("OK");
+            else print("FAIL");
+            print("\n");
+            
+            return result;
         }
 
         /* ── SYS_REBOOT ──────────────────────────────────────── */

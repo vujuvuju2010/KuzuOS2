@@ -9,9 +9,10 @@ made while listening to MEGADETHHH WATCHHIMBECAVMEAGOWDDDD
 #define USB_STS 0x04 // FOR THE GODDAMN DEBUG LMAOOOOOOOOOO
 #include "usb.h"
 #include "vga.h" // still rng 0 remember?
-#include "z_utils.h" // printf my beloved dear
+#include "z_utils.h" // printf my beloved dear  note from the future: we are in ring 0 why bother w ring 0??? 
 #define QTD_CERR(x) ((x) << 10) // QTDCERR LAZIM
 #include "fatfs/ff.h"
+#include "xchi.h"
 static FATFS usb_fs;
 
 // MASSIVE transferrrr
@@ -43,6 +44,7 @@ static int ehci_bulk(unsigned int addr, unsigned int ep, void* buf, unsigned int
     
 
     // written by 52
+    // funfact: i got the admin acc for 52 ;)
    async_head->next = (unsigned int)qh | 0x02;  // link QH into async list
 
 int timeout = 10000000;
@@ -63,7 +65,7 @@ if (qtd->token & (1 << 7)) { // halted
     z_printf("bulk halted, token=0x%x\n", qtd->token);
     return -1;
 }
-z_printf("bulk ok: token=0x%x len=%u is_in=%d buf=%x\n", qtd->token, len, is_in, (unsigned)buf);
+// z_printf("bulk ok: token=0x%x len=%u is_in=%d buf=%x\n", qtd->token, len, is_in, (unsigned)buf);
 return 0;
 }
 
@@ -110,12 +112,22 @@ if(csw->signature != CSW_SIGNATURE || csw->status != 0){
     z_printf("msc csw shat itself: sig=0x%x status=%d\n", csw->signature, csw->status);
     return -1;
 }
-z_printf("csw ok: residue=%u\n", csw->residue);
+// z_printf("csw ok: residue=%u\n", csw->residue);
 return 0;
 }
 
 
 // SCSI READ (10) reads sector 1 at za given LBA so this shall spit out the first 512 bytes i guess
+
+// Read multiple sectors from USB MSC device
+int msc_read_sectors(usb_device_t* dev, unsigned int lba, void* buf, unsigned int count) {
+    for (unsigned int i = 0; i < count; i++) {
+        if (msc_read_sector(dev, lba + i, (char*)buf + (i * 512)) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
 
 int msc_read_sector(usb_device_t* dev, unsigned int lba, void* buf){
     unsigned char cb[10] = {
@@ -183,7 +195,8 @@ void usbmsc_attach(usb_device_t* dev){
     z_printf("port status = 0x%x\n", portstatus);
     // time for sum of that config oi
     dev->msc_tag = 1;
-    dev->driver = USB_DRIVER_MSC; // TODO: add to enum at usb_bind_driver in usb.c 
+    dev->driver = USB_DRIVER_MSC; // TODO: add to enum at usb_bind_driver in usb.c
+				  // forgor
 
     if(msc_inquiry(dev) == 0){
         // spin up: retry TEST UNIT READY up to 10 times
@@ -195,6 +208,106 @@ void usbmsc_attach(usb_device_t* dev){
         }
         if(!ready){
             print_color("drive never became ready :(\n", VGA_COLOR_RED);
+            return;
+        }
+        FRESULT res = f_mount(&usb_fs, "0:", 1);
+        if(res != FR_OK)
+            z_printf("fat32 sharted itself %d\n", res);
+        else
+            print_color("FAT32 MOUNTEDDDDDDDDD :))", VGA_COLOR_GREEN);
+    }
+}
+
+
+
+/*
+
+	AFTER THIS IS FOR XCHI DRIVERS IF SOMETHING GOES SIDEWAYS JUST COMENNT OUT AFTER TS KAY?
+
+	ALL HAIL KUZUOS2 X64
+*/
+
+int msc_send_cum_xchi(xchi_device_t* xdev, unsigned char* cb, unsigned char cb_len, void* data, unsigned int data_len, int is_in){
+
+    usb_cbw_t* cbw = dma_alloc(sizeof(usb_cbw_t));
+    usb_csw_t* csw = dma_alloc(sizeof(usb_csw_t));
+
+    cbw->signature = CBW_SIGNATURE;
+    cbw->tag = xdev->msc_tag++;
+    cbw->transfer_len = data_len;
+    cbw->flags = is_in ? 0x80 : 0x00;
+    cbw->lun = 0;
+    cbw->cb_len = cb_len;
+    for(int i = 0; i < 16; i++){
+        cbw->cb[i] = (i < cb_len) ? cb[i] : 0;
+    }
+
+    // phase 1: send CBW (always OUT, always bulk_out)
+    if(xchi_bulk_transfer(xdev, cbw, 31, 0) != 0){
+        print_color("xchi msc: cbw phase shat itself\n", VGA_COLOR_RED);
+        return -1;
+    }
+
+    for(volatile int t = 0; t < 500000; t++); // HEYYY WAITTTTT
+
+    // phase 2: data phase
+    if(data_len > 0){
+        if(xchi_bulk_transfer(xdev, data, data_len, is_in) != 0)
+            return -1;
+    }
+
+    // phase 3: CSW (always IN, always bulk_in)
+    if(xchi_bulk_transfer(xdev, csw, 13, 1) != 0)
+        return -1;
+
+    if(csw->signature != CSW_SIGNATURE || csw->status != 0){
+        z_printf("xchi msc csw shat itself: sig=0x%x status=%d\n", csw->signature, csw->status);
+        return -1;
+    }
+    return 0;
+}
+
+int msc_inquiry_xchi(xchi_device_t* xdev){
+    unsigned char cb[6] = {0x12, 0, 0, 0, 36, 0};
+    void* buf = dma_alloc(36);
+    if(msc_send_cum_xchi(xdev, cb, 6, buf, 36, 1) != 0)
+        return -1;
+    print_color("YAYAYAYAYAYAYYYY XHCI MSC IS THERE I INQUIRED IT\n", VGA_COLOR_GREEN);
+    return 0;
+}
+
+static int msc_test_unit_ready_xchi(xchi_device_t* xdev){
+    unsigned char cb[6] = {0x00, 0, 0, 0, 0, 0};
+    return msc_send_cum_xchi(xdev, cb, 6, 0, 0, 1);
+}
+
+static int msc_request_sense_xchi(xchi_device_t* xdev){
+    unsigned char cb[6] = {0x03, 0, 0, 0, 18, 0};
+    void* buf = dma_alloc(18);
+    return msc_send_cum_xchi(xdev, cb, 6, buf, 18, 1);
+}
+
+
+void usbmsc_attach_xchi(xchi_device_t* xdev){
+    print_color("I FOUND A USB3 MASS DEVICEEE AYAYAYAYAY IMMA ATTACH IT NOWW", VGA_COLOR_GREEN);
+    z_printf("slot=%d bulk_in_dci=%d bulk_out_dci=%d\n", xdev->slot_id, xdev->bulk_in_dci, xdev->bulk_out_dci);
+
+    if(!xdev->bulk_in_dci || !xdev->bulk_out_dci){
+        print_color("xchi msc: missing bulk endpoint(s), bailing\n", VGA_COLOR_RED);
+        return;
+    }
+
+    xdev->msc_tag = 1; // reuses the same field name as usb_device_t; add msc_tag to xchi_device_t if not present
+
+    if(msc_inquiry_xchi(xdev) == 0){
+        int ready = 0;
+        for(int t = 0; t < 10; t++){
+            if(msc_test_unit_ready_xchi(xdev) == 0){ ready = 1; break; }
+            msc_request_sense_xchi(xdev);
+            for(volatile int w = 0; w < 2000000; w++);
+        }
+        if(!ready){
+            print_color("xchi msc: drive never became ready :(\n", VGA_COLOR_RED);
             return;
         }
         FRESULT res = f_mount(&usb_fs, "0:", 1);

@@ -316,8 +316,14 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
         case SYS_MKDIR: {
             // int mkdir(const char *pathname, mode_t mode)
             const char* pathname = (const char*)arg1;
-            extern int fs_create_directory(char* path);
-            return fs_create_directory((char*)pathname);
+            
+            // Validate user pointer
+            if (!pathname || (uint64_t)pathname < 0x400000) {
+                return -1;
+            }
+            
+            extern int vfs_mkdir(const char* path);
+            return vfs_mkdir(pathname);
         }
         
         case SYS_RMDIR: {

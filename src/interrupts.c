@@ -207,14 +207,8 @@ void isr_handler(struct regs* r)
         extern int32_t handle_syscall_extended(uint64_t syscall_num,
                                                uint64_t arg1, uint64_t arg2, uint64_t arg3,
                                                uint64_t arg4, uint64_t arg5, uint64_t arg6);
-        extern void z_printf(const char* fmt, ...);
 
         uint64_t syscall_num = r->rax;
-
-        if (syscall_num == 45) {
-            z_printf("[ISR] Syscall 45: sysno=0x%x rbx=0x%x rcx=0x%x rdx=0x%x\n",
-                     syscall_num, r->rbx, r->rcx, r->rdx);
-        }
 
         int32_t result = handle_syscall_extended(
             syscall_num,

@@ -32,6 +32,7 @@ struct fs_header {
 
 // File system fonksiyonları
 void fs_init();
+void fs_late_init();  // Call after usb_init() for USB boot support
 int fs_disk_test(); // Disk I/O test function
 int fs_create_file(char* name, char* data, uint32_t size);
 int fs_create_directory(char* path);
@@ -52,10 +53,14 @@ void fs_show_copy_progress();
 int disk_read_sector(uint32_t lba, char* buffer);
 int disk_write_sector(uint32_t lba, char* buffer);
 
+// Forward declaration for USB device type
+struct usb_device;
+
 // RAM-backed virtual disk overlay
 void ramdisk_init(uint32_t total_sectors);
 void ramdisk_init_auto();
 void ramdisk_preload_from_lba(uint32_t start_lba, uint32_t sector_count);
+void ramdisk_preload_from_usb(struct usb_device* usb_dev, uint32_t start_lba, uint32_t sector_count);
 // for VFS
 int fs_readdir_index(char *dir_path, uint32_t idx,
                      char *name_out, int *is_dir_out);

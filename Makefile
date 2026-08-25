@@ -14,7 +14,7 @@ all: kuzuos.iso
 # --------------------------------------------------------------------
 kernel.bin: boot.o kernel.o usb.o usbmsc.o keyboardusb.o vfs.o tty.o memory.o pmm.o vmm.o interrupts.o isr.o keyboard.o \
             irq.o irq_asm.o process.o filesystem.o shell.o vga.o \
-            syscall.o syscall_router.o fatfs_ff.o fatfs_diskio.o banner.o gdt.o \
+            syscall.o syscall_router.o fatfs_ff.o fatfs_diskio.o banner.o gdt.o xchi.o \
             gdt_flush.o loader_kernel.o enter_user_mode.o \
             context_switch.o elf_loader.o \
             z_printf.o z_utils.o z_err.o z_trampo.o \
@@ -55,6 +55,9 @@ z_syscall.o: src/z_syscall.S
 usb.o: src/usb.c 
 	$(CC) $(CFLAGS) -c -o $@ $<
 usbmsc.o: src/usbmsc.c 
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+xchi.o: src/xchi.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 vfs.o: src/kuzulib/fs/vfs.c 

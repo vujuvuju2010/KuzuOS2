@@ -135,6 +135,7 @@ int ehci_interrupt_in(
 extern qh_t* async_head;
 void usbmsc_attach(usb_device_t* dev);
 void usb_init(void);
+int msc_read_sectors(usb_device_t* dev, unsigned int lba, void* buf, unsigned int count);
 // USB MASS STORAGE TIMEEEE HELL YEEE IMMA READ YO FAT16 
 
 

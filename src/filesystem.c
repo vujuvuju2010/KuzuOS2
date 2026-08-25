@@ -4,7 +4,255 @@
 #include "process.h"
 #include "vga.h"
 #include "io.h"
+#include "usb.h"
 #include "kuzulib/fs/vfs.h"
+#include "usb.h"
+#include "z_utils.h" // NEEDED FOR GODDAMN PRINTF 
+// In-memory ramfs entries (for mkdir/touch)
+#define MAX_RAMFS_ENTRIES 256
+
+typedef struct {
+    char path[256];
+    char name[64];
+    int is_directory;
+    char *data;
+    uint32_t size;
+    int used;
+} ramfs_entry_t;
+
+static ramfs_entry_t ramfs_entries[MAX_RAMFS_ENTRIES];
+static int ramfs_initialized = 0;
+
+static void ramfs_init(void) {
+    if (ramfs_initialized) return;
+    for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        ramfs_entries[i].used = 0;
+        ramfs_entries[i].data = 0;
+        ramfs_entries[i].size = 0;
+    }
+    ramfs_initialized = 1;
+}
+
+int ramfs_create_directory(const char *path) {
+    extern void print(const char *);
+    print("[ramfs_create_directory] START path='");
+    print(path);
+    print("'\n");
+    
+    ramfs_init();
+    
+    // Normalize path - if relative, prepend current directory
+    char full_path[256];
+    if (path[0] != '/') {
+        extern char kernel_cwd[256];
+        int i = 0;
+        while (kernel_cwd[i] && i < 255) {
+            full_path[i] = kernel_cwd[i];
+            i++;
+        }
+        if (i > 1 && full_path[i-1] != '/') full_path[i++] = '/';
+        int j = 0;
+        while (path[j] && i < 255) {
+            full_path[i++] = path[j++];
+        }
+        full_path[i] = '\0';
+    } else {
+        int i = 0;
+        while (path[i] && i < 256) {
+            full_path[i] = path[i];
+            i++;
+        }
+        full_path[i] = '\0';
+    }
+    
+    print("[ramfs_create_directory] full_path='");
+    print(full_path);
+    print("'\n");
+    
+    // Check if already exists
+    for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        if (ramfs_entries[i].used && strcmp(ramfs_entries[i].path, full_path) == 0) {
+            print("[ramfs_create_directory] already exists\n");
+            return -1; // Already exists
+        }
+    }
+    
+    // Find free slot
+    int slot = -1;
+    for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        if (!ramfs_entries[i].used) {
+            slot = i;
+            break;
+        }
+    }
+    
+    if (slot == -1) {
+        print("[ramfs_create_directory] no space\n");
+        return -1; // No space
+    }
+    
+    // Extract name from path
+    const char *name = full_path;
+    for (int i = 0; full_path[i]; i++) {
+        if (full_path[i] == '/') name = &full_path[i + 1];
+    }
+    
+    // Create entry
+    strcpy(ramfs_entries[slot].path, full_path);
+    strcpy(ramfs_entries[slot].name, name[0] ? name : "root");
+    ramfs_entries[slot].is_directory = 1;
+    ramfs_entries[slot].data = 0;
+    ramfs_entries[slot].size = 0;
+    ramfs_entries[slot].used = 1;
+    
+    print("[ramfs_create_directory] SUCCESS\n");
+    return 0;
+}
+
+int ramfs_create_file(const char *path) {
+    ramfs_init();
+    
+    // Check if already exists
+    for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        if (ramfs_entries[i].used && strcmp(ramfs_entries[i].path, path) == 0) {
+            return -1; // Already exists
+        }
+    }
+    
+    // Find free slot
+    int slot = -1;
+    for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        if (!ramfs_entries[i].used) {
+            slot = i;
+            break;
+        }
+    }
+    
+    if (slot == -1) return -1; // No space
+    
+    // Extract name from path
+    const char *name = path;
+    for (int i = 0; path[i]; i++) {
+        if (path[i] == '/') name = &path[i + 1];
+    }
+    
+    // Create entry
+    strcpy(ramfs_entries[slot].path, path);
+    strcpy(ramfs_entries[slot].name, name[0] ? name : "file");
+    ramfs_entries[slot].is_directory = 0;
+    ramfs_entries[slot].data = 0;
+    ramfs_entries[slot].size = 0;
+    ramfs_entries[slot].used = 1;
+    
+    return 0;
+}
+
+int ramfs_exists(const char *path) {
+    ramfs_init();
+    for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        if (ramfs_entries[i].used && strcmp(ramfs_entries[i].path, path) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+ramfs_entry_t* ramfs_get_entry(const char *path) {
+    ramfs_init();
+    for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        if (ramfs_entries[i].used && strcmp(ramfs_entries[i].path, path) == 0) {
+            return &ramfs_entries[i];
+        }
+    }
+    return 0;
+}
+
+int ramfs_get_entry_by_index(uint32_t index, char **name_out, int *is_dir_out) {
+    ramfs_init();
+    uint32_t count = 0;
+    for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        if (ramfs_entries[i].used) {
+            if (count == index) {
+                *name_out = ramfs_entries[i].name;
+                *is_dir_out = ramfs_entries[i].is_directory;
+                return 0;
+            }
+            count++;
+        }
+    }
+    return -1;
+}
+
+// Get ramfs entry by index, but only for entries that are direct children of dir_path
+int ramfs_get_entry_by_index_in_dir(const char *dir_path, uint32_t index, char **name_out, int *is_dir_out) {
+    ramfs_init();
+    
+    // Normalize dir_path
+    int dir_len = 0;
+    while (dir_path[dir_len]) dir_len++;
+    
+    // Remove trailing slash unless it's root
+    char normalized_dir[256];
+    int i = 0;
+    while (i < dir_len && i < 255) {
+        normalized_dir[i] = dir_path[i];
+        i++;
+    }
+    if (i > 1 && normalized_dir[i-1] == '/') {
+        i--;
+    }
+    normalized_dir[i] = '\0';
+    dir_len = i;
+    
+    uint32_t count = 0;
+    for (i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        if (!ramfs_entries[i].used) continue;
+        
+        // Check if this entry is a direct child of dir_path
+        // Entry path should start with dir_path
+        int match = 1;
+        int j;
+        for (j = 0; j < dir_len; j++) {
+            if (ramfs_entries[i].path[j] != normalized_dir[j]) {
+                match = 0;
+                break;
+            }
+        }
+        
+        if (!match) continue;
+        
+        // After dir_path, there should be a '/' (or nothing for root)
+        if (dir_len > 1) {
+            if (ramfs_entries[i].path[dir_len] != '/') continue;
+            j = dir_len + 1;
+        } else {
+            // Root directory
+            if (ramfs_entries[i].path[0] != '/') continue;
+            if (ramfs_entries[i].path[1] == '\0') continue; // Skip root itself
+            j = 1;
+        }
+        
+        // Make sure there are no more slashes (direct child, not grandchild)
+        int has_slash = 0;
+        while (ramfs_entries[i].path[j]) {
+            if (ramfs_entries[i].path[j] == '/') {
+                has_slash = 1;
+                break;
+            }
+            j++;
+        }
+        if (has_slash) continue;
+        
+        // This is a direct child!
+        if (count == index) {
+            *name_out = ramfs_entries[i].name;
+            *is_dir_out = ramfs_entries[i].is_directory;
+            return 0;
+        }
+        count++;
+    }
+    return -1;
+}
 
 // Active ATA I/O ports (default: primary bus). Updated during detection.
 static uint16_t ata_io_base = 0x1F0;
@@ -33,6 +281,7 @@ static int is_atapi_device = 0;
 static uint8_t* ramdisk_buffer = 0;
 static uint32_t ramdisk_total_sectors = 0;
 static uint8_t ramdisk_enabled = 0;
+static int boot_from_usb = 0;  // Flag to track USB boot
 
 // Device type detection
 typedef enum {
@@ -410,6 +659,21 @@ int disk_read_sector(uint32_t lba, char* buffer) {
         memcpy(buffer, ramdisk_buffer + (lba * 512), 512);
         return 0;
     }
+    
+    // USB boot: read directly from USB device
+    if (boot_from_usb) {
+        extern usb_device_t usb_devices[16];
+        extern int msc_read_sector(usb_device_t*, unsigned int, void*);
+        
+        // Find USB mass storage device
+        for (int i = 0; i < 16; i++) {
+            if (usb_devices[i].used && usb_devices[i].connected && 
+                usb_devices[i].driver == 2) {  // USB_DRIVER_MSC = 2
+                return msc_read_sector(&usb_devices[i], lba, buffer);
+            }
+        }
+        // No USB device found, fall through to ATA/ATAPI
+    }
 
     // Use ATAPI for CD-ROM/DVD devices
     if (device_type == DEVICE_TYPE_ATAPI_CDROM || device_type == DEVICE_TYPE_ATAPI_DVD) {
@@ -454,6 +718,7 @@ int disk_read_sector(uint32_t lba, char* buffer) {
 int disk_write_sector(uint32_t lba, char* buffer) {
     if (ramdisk_enabled) {
         if (lba >= ramdisk_total_sectors) return -1;
+        if (!ramdisk_buffer) return -1;
         memcpy(ramdisk_buffer + (lba * 512), buffer, 512);
         return 0;
     }
@@ -758,19 +1023,21 @@ int fs_disk_test() {
 static int fs_read_header(struct fs_header* header);
 static int fs_write_header(const struct fs_header* header);
 
+// Static global to avoid stack overflow - reused across calls
+static struct fs_header g_fs_header_temp;
+
 static void fs_ensure_header_initialized() {
-    struct fs_header header;
-    if (fs_read_header(&header) != 0 || header.magic != FS_MAGIC) {
-        for (int i = 0; i < sizeof(struct fs_header); i++) ((char*)&header)[i] = 0;
-        header.magic = FS_MAGIC;
-        header.num_files = 1;
-        strcpy(header.files[0].name, "root");
-        strcpy(header.files[0].path, "/");
-        header.files[0].size = 0;
-        header.files[0].offset = 0;
-        header.files[0].used = 1;
-        header.files[0].is_directory = 1;
-        fs_write_header(&header);
+    if (fs_read_header(&g_fs_header_temp) != 0 || g_fs_header_temp.magic != FS_MAGIC) {
+        for (int i = 0; i < sizeof(struct fs_header); i++) ((char*)&g_fs_header_temp)[i] = 0;
+        g_fs_header_temp.magic = FS_MAGIC;
+        g_fs_header_temp.num_files = 1;
+        strcpy(g_fs_header_temp.files[0].name, "root");
+        strcpy(g_fs_header_temp.files[0].path, "/");
+        g_fs_header_temp.files[0].size = 0;
+        g_fs_header_temp.files[0].offset = 0;
+        g_fs_header_temp.files[0].used = 1;
+        g_fs_header_temp.files[0].is_directory = 1;
+        fs_write_header(&g_fs_header_temp);
     }
 }
 
@@ -811,6 +1078,134 @@ void ramdisk_init_auto() {
         }
     }
     print("ERROR: Could not allocate any ramdisk size\n");
+}
+
+// USB boot detection helper
+static usb_device_t* find_usb_boot_device(void) {
+    extern usb_device_t usb_devices[MAX_USB_DEVICES];
+    for (int i = 0; i < MAX_USB_DEVICES; i++) {
+        if (usb_devices[i].used && usb_devices[i].connected && 
+            usb_devices[i].driver == USB_DRIVER_MSC) {
+            return &usb_devices[i];
+        }
+    }
+    return 0;
+}
+
+// Preload from USB mass storage device
+void ramdisk_preload_from_usb(usb_device_t* dev, uint32_t start_lba, uint32_t sector_count) {
+    if (!ramdisk_enabled) {
+        print("FATAL: RAM disk not enabled! Skipping preload.\n");
+        return;
+    }
+    if (sector_count == 0) {
+        print("FATAL: sector_count is zero! Nothing to copy.\n");
+        return;
+    }
+    if (sector_count > ramdisk_total_sectors)
+        sector_count = ramdisk_total_sectors;
+
+    extern int msc_read_sector(usb_device_t*, unsigned int, void*);
+    
+    char tmp[512];
+    uint32_t total = sector_count;
+    uint32_t last_shown_percent = 101;
+    const uint32_t bar_width = 30;
+    uint32_t read_errors = 0;
+    uint32_t consecutive_errors = 0;
+
+    print("Copying ISO from USB to RAM (read-only USB -> RAM, RW enabled)\n");
+    print("Starting USB read... (this may take a while)\n");
+
+    // Read sector by sector with delays to avoid USB timeouts
+    for (uint32_t i = 0; i < sector_count; i++) {
+        // Longer delay every sector to prevent USB issues
+        if ((i & 0x7) == 0x7) {
+            for (volatile int d = 0; d < 100000; d++);
+        }
+        
+        int r = msc_read_sector(dev, start_lba + i, tmp);
+        
+        if (r != 0) {
+            read_errors++;
+            consecutive_errors++;
+            // Zero fill on error
+            for (int b = 0; b < 512; b++) tmp[b] = 0;
+            
+            // If too many consecutive errors, abort
+            if (consecutive_errors > 10) {
+                print_color("\n\nToo many USB read errors, aborting\n", VGA_COLOR_RED);
+                z_printf("Failed at sector %u\n", start_lba + i);
+                break;
+            }
+            
+            // Longer delay after error
+            for (volatile int d = 0; d < 500000; d++);
+        } else {
+            consecutive_errors = 0;
+        }
+        
+        memcpy(ramdisk_buffer + ((start_lba + i) * 512), tmp, 512);
+
+        uint32_t done = i + 1;
+        if (total == 0) total = 1;
+        uint32_t percent = (done * 100) / total;
+        
+        // Show progress every 1% instead of 5% to show it's working
+        if (percent > last_shown_percent || done == total) {
+            last_shown_percent = percent;
+            char bar[31];
+            uint32_t filled = (percent * bar_width) / 100;
+            for (uint32_t j = 0; j < bar_width; j++) bar[j] = (j < filled) ? '#' : '-';
+            bar[bar_width] = '\0';
+
+            print("  ["); print(bar); print("] ");
+            char pbuf[4]; int p = percent; int ppos = 0;
+            if (p == 0) pbuf[ppos++] = '0';
+            else {
+                char rev[4]; int rp = 0;
+                while (p > 0 && rp < 3) { rev[rp++] = '0' + (p % 10); p /= 10; }
+                while (rp--) pbuf[ppos++] = rev[rp];
+            }
+            pbuf[ppos] = 0; print(pbuf); print("%  ");
+            
+            uint32_t mb_done = (done * 512) / (1024*1024);
+            uint32_t mb_total = (total * 512) / (1024*1024);
+            char nbuf[16]; int npos = 0;
+            if (mb_done == 0) nbuf[npos++] = '0';
+            else {
+                char revn[16]; int rn = 0;
+                while (mb_done > 0) { revn[rn++] = '0' + (mb_done % 10); mb_done /= 10; }
+                while (rn--) nbuf[npos++] = revn[rn];
+            }
+            nbuf[npos] = 0; print(nbuf);
+            print("MB/");
+            npos = 0;
+            if (mb_total == 0) nbuf[npos++] = '0';
+            else {
+                char revt[16]; int rt = 0;
+                while (mb_total > 0) { revt[rt++] = '0' + (mb_total % 10); mb_total /= 10; }
+                while (rt--) nbuf[npos++] = revt[rt];
+            }
+            nbuf[npos] = 0; print(nbuf); print("MB");
+            
+            if (read_errors > 0) {
+                print(" (");
+                char ebuf[8]; int epos = 0; uint32_t e = read_errors;
+                if (e == 0) ebuf[epos++] = '0';
+                else {
+                    char reve[8]; int re = 0;
+                    while (e > 0) { reve[re++] = '0' + (e % 10); e /= 10; }
+                    while (re--) ebuf[epos++] = reve[re];
+                }
+                ebuf[epos] = 0; print(ebuf); print(" errors)");
+            }
+            print("\n");
+        }
+    }
+
+    print_color("\nUSB->RAM preload complete. Operating on RAM (no writes to USB)\n", VGA_COLOR_LIGHT_GREEN);
+    boot_from_usb = 1;
 }
 
 void ramdisk_preload_from_lba(uint32_t start_lba, uint32_t sector_count) {
@@ -948,63 +1343,97 @@ void fs_init() {
         return;
     }
 
-    // EMERGENCY FIX: Force ATAPI mode - If we booted from ISO, it exists!
+    print("Ramdisk initialized, will check for boot media after USB init\n");
+    
+    // NOTE: CD/DVD boot detection moved to fs_late_init() to check USB first
+}
+
+// Late filesystem init - call AFTER usb_init() to enable USB boot
+void fs_late_init() {
+    // Check for USB boot device first
+    print("Checking for USB boot device...\n");
+    for (volatile int i = 0; i < 5000000; i++);  // Brief delay for enumeration
+    
+    usb_device_t* usb_boot = find_usb_boot_device();
+    if (usb_boot) {
+        print_color("USB boot device detected!\n", VGA_COLOR_LIGHT_CYAN);
+        z_printf("USB: vendor=0x%x product=0x%x\n", usb_boot->vendor_id, usb_boot->product_id);
+        print_color("USB boot enabled - disk reads will use USB device\n", VGA_COLOR_LIGHT_GREEN);
+        
+        // Mark as USB boot BEFORE reading ISO
+        boot_from_usb = 1;
+        
+        // Now try to detect ISO on USB
+        print("Detecting ISO filesystem on USB...\n");
+        uint32_t iso_blocks = 0;
+        if (iso_get_volume_size_blocks(&iso_blocks) == 0) {
+            print_color("ISO filesystem detected on USB!\n", VGA_COLOR_LIGHT_GREEN);
+            char sbuf[16]; int pos = 0; uint32_t v = iso_blocks;
+            if (v == 0) sbuf[pos++] = '0';
+            else {
+                char rev[16]; int rp = 0;
+                while (v) { rev[rp++] = '0' + (v % 10); v /= 10; }
+                while (rp--) sbuf[pos++] = rev[rp];
+            }
+            sbuf[pos] = 0; print("ISO size: "); print(sbuf); print(" blocks\n");
+        } else {
+            print_color("WARNING: No ISO detected on USB, trying raw filesystem\n", VGA_COLOR_YELLOW);
+        }
+        
+        // Init filesystem header
+        fs_ensure_header_initialized();
+        
+        print_color("USB boot complete - system ready!\n", VGA_COLOR_LIGHT_GREEN);
+        return;
+    }
+    
+    // No USB, try CD/DVD
+    print("No USB boot device, trying CD/DVD...\n");
+    
     device_type = DEVICE_TYPE_ATAPI_CDROM;
     is_atapi_device = 1;
     
-    // Now try to detect properly (but default stays ATAPI if detection fails)
     DeviceType detected = detect_device();
-    if (detected == DEVICE_TYPE_NONE) {
-        // Keep the forced ATAPI settings
-    } else {
+    if (detected != DEVICE_TYPE_NONE) {
         device_type = detected;
     }
 
-    // Determine ISO size
     uint32_t iso_blocks = 0;
-    int iso_detected = 0;
     
     if (iso_get_volume_size_blocks(&iso_blocks) == 0) {
-        iso_detected = 1;
+        print_color("CD/DVD ISO detected!\n", VGA_COLOR_LIGHT_GREEN);
+        
+        uint32_t clone_sectors = iso_blocks * 4;
+        if (clone_sectors == 0) {
+            clone_sectors = 8192;
+        }
+        if (clone_sectors > ramdisk_total_sectors) {
+            clone_sectors = ramdisk_total_sectors;
+        }
+
+        char sbuf[16]; int pos = 0; uint32_t v = clone_sectors;
+        if (v == 0) sbuf[pos++] = '0';
+        else {
+            char rev[16]; int rp = 0;
+            while (v) { rev[rp++] = '0' + (v % 10); v /= 10; }
+            while (rp--) sbuf[pos++] = rev[rp];
+        }
+        sbuf[pos] = 0; print("Loading "); print(sbuf); print(" sectors from CD/DVD\n");
+
+        ramdisk_preload_from_lba(0, clone_sectors);
+
+        if (fs_disk_test() != 0) {
+            print("CD/DVD filesystem test failed\n");
+        } else {
+            print_color("CD/DVD boot successful :)\n", VGA_COLOR_LIGHT_GREEN);
+        }
     } else {
-       print("shit...\n");
-        
-        // Initialize filesystem header in RAM
+        print("shit...\n");
         fs_ensure_header_initialized();
-        
         if (fs_disk_test() != 0) {
             print("shit\n");
         }
-        
-        return; // EXIT HERE - don't try to preload if no ISO
     }
-
-    // Only proceed with preload if ISO was detected
-    uint32_t clone_sectors = iso_blocks * 4;
-    if (clone_sectors == 0) {
-        print("shit\n");
-        clone_sectors = 8192;
-    }
-    if (clone_sectors > ramdisk_total_sectors) {
-        clone_sectors = ramdisk_total_sectors;
-    }
-
-    char sbuf[16]; int pos = 0; uint32_t v = clone_sectors;
-    if (v == 0) sbuf[pos++] = '0';
-    else {
-        char rev[16]; int rp = 0;
-        while (v) { rev[rp++] = '0' + (v % 10); v /= 10; }
-        while (rp--) sbuf[pos++] = rev[rp];
-    }
-    sbuf[pos] = 0; print(sbuf); print("\n");
-
-    ramdisk_preload_from_lba(0, clone_sectors);
-
-    if (fs_disk_test() != 0) {
-        print("shit\n");
-    }
-    
-    print_color("System ready :)\n", VGA_COLOR_LIGHT_GREEN);
 }
 
 
@@ -1012,25 +1441,30 @@ void fs_init() {
 
 int fs_create_directory(char* path) {
     fs_ensure_header_initialized();
-    struct fs_header header;
-    if (fs_read_header(&header) != 0) return -1;
-    if (header.num_files >= MAX_FILES) return -1;
+    
+    // Use static global to avoid stack overflow
+    if (fs_read_header(&g_fs_header_temp) != 0) return -1;
+    if (g_fs_header_temp.num_files >= MAX_FILES) return -1;
+    
     int slot = -1;
     for (int i = 0; i < MAX_FILES; i++) {
-        if (!header.files[i].used) { slot = i; break; }
+        if (!g_fs_header_temp.files[i].used) { slot = i; break; }
     }
     if (slot == -1) return -3;
+    
     char* name = path;
     for (int i = 0; path[i] != '\0'; i++) if (path[i] == '/') name = &path[i + 1];
     if (name[0] == '\0') name = "root";
-    strcpy(header.files[slot].name, name);
-    strcpy(header.files[slot].path, path);
-    header.files[slot].size = 0;
-    header.files[slot].offset = 0;
-    header.files[slot].used = 1;
-    header.files[slot].is_directory = 1;
-    header.num_files++;
-    if (fs_write_header(&header) != 0) return -4;
+    
+    strcpy(g_fs_header_temp.files[slot].name, name);
+    strcpy(g_fs_header_temp.files[slot].path, path);
+    g_fs_header_temp.files[slot].size = 0;
+    g_fs_header_temp.files[slot].offset = 0;
+    g_fs_header_temp.files[slot].used = 1;
+    g_fs_header_temp.files[slot].is_directory = 1;
+    g_fs_header_temp.num_files++;
+    
+    if (fs_write_header(&g_fs_header_temp) != 0) return -4;
     return 0;
 }
 
@@ -1332,25 +1766,6 @@ struct fs_header* get_fs_header(void) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // MEEE AND MA MONKEEEE yeee MONKE EATS THE BANANEEEEE
 
 int fs_chdir(char *path)
@@ -1522,4 +1937,4 @@ void fs_create_directory_raw(const char *path) {
     header->num_files++;
 }
 
-// yay 666
+// yay 1944

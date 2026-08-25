@@ -195,6 +195,10 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr) {
     // USBBB
     print_color("time for usb brrrrrrrrrr\n", VGA_COLOR_LIGHT_GREEN);
     usb_init();
+    
+    // USB boot check (must run AFTER usb_init)
+    print_color("Checking for USB boot...\n", VGA_COLOR_LIGHT_CYAN);
+    fs_late_init();
 
     // ECHI WAKTIII
     /*
