@@ -5,6 +5,7 @@
 #include "vga.h"
 #include "io.h"
 #include "usb.h"
+#include "xchi.h"  // For USB 3.0 boot support
 #include "kuzulib/fs/vfs.h"
 #include "usb.h"
 #include "z_utils.h" // NEEDED FOR GODDAMN PRINTF 
@@ -660,8 +661,21 @@ int disk_read_sector(uint32_t lba, char* buffer) {
         return 0;
     }
     
-    // USB boot: read directly from USB device
-    if (boot_from_usb) {
+    // USB 3.0 boot: read directly from xHCI device
+    if (boot_from_usb == 2) {
+        extern xchi_device_t xchi_devices[MAX_XCHI_DEVICES];
+        
+        // Find USB 3.0 mass storage device
+        for (int i = 0; i < MAX_XCHI_DEVICES; i++) {
+            if (xchi_devices[i].used && xchi_devices[i].is_msc) {
+                return msc_read_sector_xchi((struct xchi_device_t*)&xchi_devices[i], lba, buffer);
+            }
+        }
+        // No xHCI device found, fall through to ATA/ATAPI
+    }
+    
+    // USB 2.0 boot: read directly from EHCI device
+    if (boot_from_usb == 1) {
         extern usb_device_t usb_devices[16];
         extern int msc_read_sector(usb_device_t*, unsigned int, void*);
         
@@ -1083,10 +1097,24 @@ void ramdisk_init_auto() {
 // USB boot detection helper
 static usb_device_t* find_usb_boot_device(void) {
     extern usb_device_t usb_devices[MAX_USB_DEVICES];
+    
+    // Check EHCI devices (USB 2.0)
     for (int i = 0; i < MAX_USB_DEVICES; i++) {
         if (usb_devices[i].used && usb_devices[i].connected && 
             usb_devices[i].driver == USB_DRIVER_MSC) {
             return &usb_devices[i];
+        }
+    }
+    return 0;
+}
+
+// USB 3.0 (xHCI) boot detection helper
+static void* find_xhci_boot_device(void) {
+    extern xchi_device_t xchi_devices[MAX_XCHI_DEVICES];
+    
+    for (int i = 0; i < MAX_XCHI_DEVICES; i++) {
+        if (xchi_devices[i].used && xchi_devices[i].is_msc) {
+            return &xchi_devices[i];
         }
     }
     return 0;
@@ -1354,20 +1382,57 @@ void fs_late_init() {
     print("Checking for USB boot device...\n");
     for (volatile int i = 0; i < 5000000; i++);  // Brief delay for enumeration
     
+    // First check USB 3.0 (xHCI) devices - faster if available
+    void* xhci_boot = find_xhci_boot_device();
+    if (xhci_boot) {
+        xchi_device_t* xdev = (xchi_device_t*)xhci_boot;
+        print_color("USB 3.0 boot device detected!\n", VGA_COLOR_LIGHT_CYAN);
+        z_printf("USB3: vendor=0x%x product=0x%x slot=%d\n", 
+                 xdev->vendor_id, xdev->product_id, xdev->slot_id);
+        print_color("USB 3.0 boot enabled - disk reads will use xHCI device\n", VGA_COLOR_LIGHT_GREEN);
+        
+        // Mark as USB boot with special flag for xHCI (2 = xHCI, 1 = EHCI)
+        boot_from_usb = 2;
+        
+        // Now try to detect ISO on USB 3.0
+        print("Detecting ISO filesystem on USB 3.0...\n");
+        uint32_t iso_blocks = 0;
+        if (iso_get_volume_size_blocks(&iso_blocks) == 0) {
+            print_color("ISO filesystem detected on USB 3.0!\n", VGA_COLOR_LIGHT_GREEN);
+            char sbuf[16]; int pos = 0; uint32_t v = iso_blocks;
+            if (v == 0) sbuf[pos++] = '0';
+            else {
+                char rev[16]; int rp = 0;
+                while (v) { rev[rp++] = '0' + (v % 10); v /= 10; }
+                while (rp--) sbuf[pos++] = rev[rp];
+            }
+            sbuf[pos] = 0; print("ISO size: "); print(sbuf); print(" blocks\n");
+        } else {
+            print_color("WARNING: No ISO detected on USB 3.0, trying raw filesystem\n", VGA_COLOR_YELLOW);
+        }
+        
+        // Init filesystem header
+        fs_ensure_header_initialized();
+        
+        print_color("USB 3.0 boot complete - system ready!\n", VGA_COLOR_LIGHT_GREEN);
+        return;
+    }
+    
+    // Fall back to USB 2.0 (EHCI)
     usb_device_t* usb_boot = find_usb_boot_device();
     if (usb_boot) {
-        print_color("USB boot device detected!\n", VGA_COLOR_LIGHT_CYAN);
-        z_printf("USB: vendor=0x%x product=0x%x\n", usb_boot->vendor_id, usb_boot->product_id);
-        print_color("USB boot enabled - disk reads will use USB device\n", VGA_COLOR_LIGHT_GREEN);
+        print_color("USB 2.0 boot device detected!\n", VGA_COLOR_LIGHT_CYAN);
+        z_printf("USB2: vendor=0x%x product=0x%x\n", usb_boot->vendor_id, usb_boot->product_id);
+        print_color("USB 2.0 boot enabled - disk reads will use EHCI device\n", VGA_COLOR_LIGHT_GREEN);
         
         // Mark as USB boot BEFORE reading ISO
         boot_from_usb = 1;
         
         // Now try to detect ISO on USB
-        print("Detecting ISO filesystem on USB...\n");
+        print("Detecting ISO filesystem on USB 2.0...\n");
         uint32_t iso_blocks = 0;
         if (iso_get_volume_size_blocks(&iso_blocks) == 0) {
-            print_color("ISO filesystem detected on USB!\n", VGA_COLOR_LIGHT_GREEN);
+            print_color("ISO filesystem detected on USB 2.0!\n", VGA_COLOR_LIGHT_GREEN);
             char sbuf[16]; int pos = 0; uint32_t v = iso_blocks;
             if (v == 0) sbuf[pos++] = '0';
             else {
@@ -1383,7 +1448,7 @@ void fs_late_init() {
         // Init filesystem header
         fs_ensure_header_initialized();
         
-        print_color("USB boot complete - system ready!\n", VGA_COLOR_LIGHT_GREEN);
+        print_color("USB 2.0 boot complete - system ready!\n", VGA_COLOR_LIGHT_GREEN);
         return;
     }
     

@@ -56,41 +56,21 @@ void tss_init(uint32_t idx, uint64_t kernel_stack_top) {
     // idx occupies TWO gdt[] slots (idx, idx+1) -- caller must leave both free
     gdt_set_tss_gate(idx, base, limit, 0x89, 0x00);
 }
+extern uint8_t stack64_top[]; // from boot.asm
 
 void gdt_init(void) {
     gp.limit = (sizeof(struct gdt_entry) * 7) - 1;
     gp.base  = (uint64_t)&gdt;
 
-    // Null descriptor
     gdt_set_gate(0, 0, 0, 0, 0);
-
-    // Kernel code segment (0x08) -- access 0x9A + granularity 0x20 sets
-    // the L-bit (long mode, bit 5 of the granularity byte) instead of
-    // the old D-bit/0xCF (32-bit default operand size + 4K granularity).
-    // L-bit and D-bit are mutually exclusive; L=1 implies 64-bit code.
     gdt_set_gate(1, 0, 0, 0x9A, 0x20);
-
-    // Kernel data segment (0x10) -- data segments don't have an L-bit,
-    // granularity mostly irrelevant since base/limit are ignored, kept
-    // at 0x00 for a clean flat descriptor.
     gdt_set_gate(2, 0, 0, 0x92, 0x00);
-
-    // User code segment (0x18, or 0x1B with RPL=3) -- DPL=3 (bits 5-6 of
-    // access = 11), L-bit set same as kernel code.
     gdt_set_gate(3, 0, 0, 0xFA, 0x20);
-
-    // User data segment (0x20, or 0x23 with RPL=3)
     gdt_set_gate(4, 0, 0, 0xF2, 0x00);
 
-    // TSS (0x28) -- occupies slots 5 AND 6 (16 bytes total in long mode)
-    // Kernel stack top gets set for real once you have a proper stack
-    // allocated; 0x90000 carried over as a placeholder like the x32 code.
-    tss_init(5, 0x90000);
+    tss_init(5, (uint64_t)stack64_top);   // was 0x90000
 
-    // Load the GDT
     gdt_flush((uint64_t)&gp);
-
-    // Load the TSS
     tss_flush();
 }
 

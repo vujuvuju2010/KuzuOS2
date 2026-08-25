@@ -153,6 +153,7 @@ typedef struct {
     u32 bulk_in_enq_idx, bulk_in_cycle;
     u32 bulk_out_enq_idx, bulk_out_cycle;
     u32 msc_tag;
+    u32 is_msc;               // Flag: 1 if this is a mass storage device (for boot detection)
     u16 vendor_id, product_id;
     u32 usb_bus;              // for lsusb 
     usb_device_t* generic; // link back to the usb.c-level device, once class/enum is done

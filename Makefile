@@ -362,8 +362,12 @@ iso/boot/grub/grub.cfg:
 	mkdir -p iso/boot/grub
 	echo "set timeout=5" > $@
 	echo "set default=0" >> $@
+	echo "insmod vbe" >> $@
+	echo "insmod gfxterm" >> $@
+	echo "insmod efi_gop" >> $@
 	echo "" >> $@
 	echo "menuentry \"KuzuOS\" {" >> $@
+	echo "	  set gfxpayload=keep" >> $@
 	echo "    multiboot2 /boot/kernel.bin" >> $@
 	echo "    boot" >> $@
 	echo "}" >> $@

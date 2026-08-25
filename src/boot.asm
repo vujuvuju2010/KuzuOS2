@@ -18,9 +18,9 @@ fb_tag_start:
     dw 5                        ; type = framebuffer
     dw 0                        ; flags  
     dd fb_tag_end - fb_tag_start ; size
-    dd 1024                     ; width
-    dd 768                      ; height
-    dd 32                       ; depth
+    dd 0                     ; width - any 
+    dd 0                      ; height - any
+    dd 0                       ; depth - any
 fb_tag_end:
 
     ; end tag
@@ -72,7 +72,8 @@ _start:
     push ebx  ; multiboot info
     push eax  ; multiboot magic
     
-    ; Check multiboot magic
+    ; Check multiboot magic FIRST (use saved value)
+    mov eax, [mb_magic_saved]
     cmp eax, 0x36d76289
     jne .call_kernel
     
@@ -113,6 +114,14 @@ mov [fb_height], eax
     
     ; lik big papi
     add esp, 8
+    jmp .halt
+
+.call_kernel:
+    ; call big papi
+    call long_mode_init ; call the long mode papi
+    
+    ; lik big papi
+    add esp, 8
     
 .halt: ;ezik 32 bit halt
     cli
@@ -120,6 +129,8 @@ mov [fb_height], eax
     jmp .halt
 
 ; EVERYTHING AFTER THIS IS FOR X64 THEE SHALL NOT FORGET THEE SHALL NOT FORGIVE
+global stack64_bottom
+global stack64_top
 
 section .bss
 align 4096
@@ -156,6 +167,14 @@ section .text
 bits 32
 
 long_mode_init:
+    ; Disable interrupts (already done but explicit)
+    cli
+    
+    ; Disable NMI
+    in al, 0x70
+    or al, 0x80
+    out 0x70, al
+    
     ; Zero out page tables (now we have 6 tables: pml4, pdpt, pd_low, pd_1, pd_2, pd_high)
     mov edi, pml4
     mov ecx, 4096 * 6 / 4
@@ -270,6 +289,16 @@ long_mode_start:
     mov ss, ax
 
     mov rsp, stack64_top
+    
+    ; Enable SSE/FPU for real hardware
+    mov rax, cr0
+    and ax, 0xFFFB      ; Clear CR0.EM (bit 2) - No emulation
+    or ax, 0x2          ; Set CR0.MP (bit 1) - Monitor coprocessor
+    mov cr0, rax
+    
+    mov rax, cr4
+    or ax, 3 << 9       ; Set CR4.OSFXSR and CR4.OSXMMEXCPT (bits 9-10)
+    mov cr4, rax
 
     mov rdi, [framebuffer]
     mov esi, [fb_width]

@@ -289,7 +289,7 @@ static int msc_request_sense_xchi(xchi_device_t* xdev){
 
 
 void usbmsc_attach_xchi(xchi_device_t* xdev){
-    print_color("I FOUND A USB3 MASS DEVICEEE AYAYAYAYAY IMMA ATTACH IT NOWW", VGA_COLOR_GREEN);
+    print_color("I FOUND A USB3 MASS DEVICEEE AYAYAYAYAY IMMA ATTACH IT NOWW\n", VGA_COLOR_GREEN);
     z_printf("slot=%d bulk_in_dci=%d bulk_out_dci=%d\n", xdev->slot_id, xdev->bulk_in_dci, xdev->bulk_out_dci);
 
     if(!xdev->bulk_in_dci || !xdev->bulk_out_dci){
@@ -298,6 +298,7 @@ void usbmsc_attach_xchi(xchi_device_t* xdev){
     }
 
     xdev->msc_tag = 1; // reuses the same field name as usb_device_t; add msc_tag to xchi_device_t if not present
+    xdev->is_msc = 1; // Mark as mass storage device for boot detection
 
     if(msc_inquiry_xchi(xdev) == 0){
         int ready = 0;
@@ -310,10 +311,35 @@ void usbmsc_attach_xchi(xchi_device_t* xdev){
             print_color("xchi msc: drive never became ready :(\n", VGA_COLOR_RED);
             return;
         }
+        
+        print_color("USB 3.0 mass storage device ready for boot!\n", VGA_COLOR_LIGHT_GREEN);
+        
         FRESULT res = f_mount(&usb_fs, "0:", 1);
         if(res != FR_OK)
             z_printf("fat32 sharted itself %d\n", res);
         else
             print_color("FAT32 MOUNTEDDDDDDDDD :))", VGA_COLOR_GREEN);
     }
+}
+
+// xHCI MSC sector read - used for USB 3.0 boot
+int msc_read_sector_xchi(struct xchi_device_t* xdev, unsigned int lba, void* buffer){
+    unsigned char cb[10] = {0x28, 0, 0, 0, 0, 0, 0, 0, 1, 0};
+    cb[2] = (lba >> 24) & 0xFF;
+    cb[3] = (lba >> 16) & 0xFF;
+    cb[4] = (lba >> 8) & 0xFF;
+    cb[5] = lba & 0xFF;
+    
+    return msc_send_cum_xchi((xchi_device_t*)xdev, cb, 10, buffer, 512, 1);
+}
+
+// xHCI MSC sector write - for completeness
+int msc_write_sector_xchi(struct xchi_device_t* xdev, unsigned int lba, void* buffer){
+    unsigned char cb[10] = {0x2A, 0, 0, 0, 0, 0, 0, 0, 1, 0};
+    cb[2] = (lba >> 24) & 0xFF;
+    cb[3] = (lba >> 16) & 0xFF;
+    cb[4] = (lba >> 8) & 0xFF;
+    cb[5] = lba & 0xFF;
+    
+    return msc_send_cum_xchi((xchi_device_t*)xdev, cb, 10, buffer, 512, 0);
 }

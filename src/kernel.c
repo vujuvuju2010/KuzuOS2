@@ -113,7 +113,19 @@ static uint64_t detect_available_memory(uint32_t mb_addr) {
 
 extern void gdt_init();
 
-
+// Early debug output to VGA text mode (works before framebuffer)
+static void early_print(const char* msg) {
+    volatile uint16_t* vga = (volatile uint16_t*)0xB8000;
+    static int pos = 0;
+    while (*msg) {
+        if (*msg == '\n') {
+            pos = ((pos / 80) + 1) * 80;
+        } else {
+            vga[pos++] = (uint16_t)(*msg) | 0x0F00;
+        }
+        msg++;
+    }
+}
 
 void delay(int ms) {
     for (volatile int i = 0; i < ms * 7000; i++) {

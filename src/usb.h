@@ -2,6 +2,9 @@
 #ifndef USB_H
 #define USB_H
 
+// Forward declaration for xHCI device type (defined in xchi.h)
+struct xchi_device_t;
+
 #define USB_DRIVER_NONE      0
 #define USB_DRIVER_KEYBOARD  1
 #define USB_DRIVER_MSC       2 
@@ -167,4 +170,9 @@ typedef struct __attribute__((packed)) {
 int msc_read_sector(usb_device_t* dev, unsigned int lba, void* buf);
 int msc_write_sector(usb_device_t* dev, unsigned int lba, void* buf);
 int msc_send_cum(usb_device_t* dev, unsigned char* cb, unsigned char cb_len, void* data, unsigned int data_len, int is_in);
+
+// USB 3.0 (xHCI) mass storage functions
+int msc_read_sector_xchi(struct xchi_device_t* xdev, unsigned int lba, void* buffer);
+int msc_write_sector_xchi(struct xchi_device_t* xdev, unsigned int lba, void* buffer);
+
 #endif

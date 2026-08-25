@@ -337,6 +337,70 @@ static void xchi_init_ep0_ring(xchi_device_t* xdev){
     xdev->ep0_cycle = 1;
 }
  
+
+/* Configure bulk endpoints for mass storage - sends Configure Endpoint command */
+static int xchi_configure_bulk_endpoints(xchi_device_t* xdev){
+    print_color("xchi: configuring bulk endpoints\n", VGA_COLOR_LIGHT_CYAN);
+    
+    // Allocate transfer rings for bulk IN and OUT (same as ep0_ring allocation)
+    xdev->bulk_in_ring = (trb_t*)xchi_alloc_aligned(sizeof(trb_t) * XCHI_RING_SIZE);
+    xchi_ring_add_link(xdev->bulk_in_ring, XCHI_RING_SIZE, 1);
+    xdev->bulk_out_ring = (trb_t*)xchi_alloc_aligned(sizeof(trb_t) * XCHI_RING_SIZE);
+    xchi_ring_add_link(xdev->bulk_out_ring, XCHI_RING_SIZE, 1);
+    
+    xdev->bulk_in_enq_idx = 0;
+    xdev->bulk_out_enq_idx = 0;
+    xdev->bulk_in_cycle = 1;
+    xdev->bulk_out_cycle = 1;
+    
+    // Build input context for Configure Endpoint command
+    unsigned char* input = (unsigned char*)xdev->input_ctx;
+    xchi_input_control_ctx_t* ctrl = (xchi_input_control_ctx_t*)input;
+    
+    // Determine max DCI and update Context Entries in slot context FIRST
+    u32 max_dci = xdev->bulk_in_dci > xdev->bulk_out_dci ? xdev->bulk_in_dci : xdev->bulk_out_dci;
+    xchi_slot_ctx_t* slot_ctx = (xchi_slot_ctx_t*)(input + xchi_context_size);
+    slot_ctx->route_speed = (slot_ctx->route_speed & ~(0x1F << 27)) | ((max_dci) << 27);
+    
+    // Add bulk IN and OUT endpoints (A0=slot, A1=ep0, already configured)
+    ctrl->drop_flags = 0;
+    ctrl->add_flags = (1 << 0) | (1 << xdev->bulk_in_dci) | (1 << xdev->bulk_out_dci);
+    
+    // Bulk IN endpoint context
+    xchi_ep_ctx_t* bulk_in_ctx = (xchi_ep_ctx_t*)(input + xchi_context_size * (xdev->bulk_in_dci + 1));
+    bulk_in_ctx->ep_state = 0;
+    // EP Type for Bulk IN = 6, not 2
+    bulk_in_ctx->ep_type_mps = (6 << 3) | (xdev->bulk_in_mps << 16) | (3 << 1);
+    u64 bulk_in_deq = XCHI_PHYS(xdev->bulk_in_ring) | 1;
+    bulk_in_ctx->deq_lo = (u32)(bulk_in_deq & 0xFFFFFFFF);
+    bulk_in_ctx->deq_hi = (u32)(bulk_in_deq >> 32);
+    bulk_in_ctx->avg_trb_len_max_esit = 512;
+    for (int i = 0; i < 3; i++) bulk_in_ctx->rsvd[i] = 0;
+    
+    // Bulk OUT endpoint context
+    xchi_ep_ctx_t* bulk_out_ctx = (xchi_ep_ctx_t*)(input + xchi_context_size * (xdev->bulk_out_dci + 1));
+    bulk_out_ctx->ep_state = 0;
+    // EP Type for Bulk OUT = 2, not 6
+    bulk_out_ctx->ep_type_mps = (2 << 3) | (xdev->bulk_out_mps << 16) | (3 << 1);
+    u64 bulk_out_deq = XCHI_PHYS(xdev->bulk_out_ring) | 1;
+    bulk_out_ctx->deq_lo = (u32)(bulk_out_deq & 0xFFFFFFFF);
+    bulk_out_ctx->deq_hi = (u32)(bulk_out_deq >> 32);
+    bulk_out_ctx->avg_trb_len_max_esit = 512;
+    for (int i = 0; i < 3; i++) bulk_out_ctx->rsvd[i] = 0;
+    
+    // Send Configure Endpoint command
+    trb_t completion;
+    u64 input_phys = XCHI_PHYS(input);
+    if(xchi_run_command((u32)(input_phys & 0xFFFFFFFF), (u32)(input_phys >> 32), 0,
+                         (xdev->slot_id << 24), TRB_TYPE_CONFIG_EP, &completion) != 0){
+        print_color("xchi: configure endpoint shat itself :(\n", VGA_COLOR_RED);
+        return -1;
+    }
+    
+    print_color("xchi: bulk endpoints configured!\n", VGA_COLOR_LIGHT_GREEN);
+    return 0;
+}
+
 /* Enable Slot -> Address Device for a device that just appeared on `port` (0-based).
    Returns 0 and fills *slot_id_out on success. This is the xHCI equivalent of your
    EHCI resetport() + usb_enumerate_device()'s SET_ADDRESS step, combined - xHCI does
@@ -570,7 +634,67 @@ int xchi_enumerate_port(unsigned int port){
     xdev -> product_id = *(u16*)(desc + 10);
     z_printf("XCHI DEVICE slot=%d vid=0x%x pid=0x%x speed=%d\n", xdev->slot_id, xdev -> vendor_id, xdev -> product_id, speed);
  
-   
+    // Parse configuration descriptor to get class/subclass/protocol and endpoints
+    unsigned char* conf = (unsigned char*)dma_alloc(255);
+    setup->bmreq = 0x80;
+    setup->breq  = 0x06;
+    setup->wval  = 0x0200;  // Configuration descriptor
+    setup->widx  = 0;
+    setup->wlen  = 255;
+    
+    if(xchi_control_transfer(xdev, setup, conf, 255, 1) == 0) {
+        int i = 0;
+        while(i < 255) {
+            unsigned char len  = conf[i];
+            unsigned char type = conf[i+1];
+            if(len == 0) break;
+
+            // Interface descriptor
+            if(type == 0x04) {
+                xdev->class    = conf[i+5];
+                xdev->subclass = conf[i+6];
+                xdev->protocol = conf[i+7];
+                z_printf("xchi: class=%d subclass=%d protocol=%d\n", 
+                         xdev->class, xdev->subclass, xdev->protocol);
+            }
+            // Endpoint descriptor
+            if(type == 0x05) {
+                unsigned char ep_addr = conf[i+2];
+                unsigned char attr    = conf[i+3];
+                u16 max_packet = *(u16*)(conf + i + 4);
+                
+                // Bulk endpoints (attr & 0x03 == 0x02)
+                if((attr & 0x03) == 0x02) {
+                    if(ep_addr & 0x80) {
+                        xdev->bulk_in_dci = (ep_addr & 0x0F) * 2 + 1;  // IN endpoints are odd DCI
+                        xdev->bulk_in_mps = max_packet;
+                        z_printf("xchi: bulk IN ep=%d dci=%d mps=%d\n", 
+                                 ep_addr & 0x0F, xdev->bulk_in_dci, max_packet);
+                    } else {
+                        xdev->bulk_out_dci = (ep_addr & 0x0F) * 2;  // OUT endpoints are even DCI
+                        xdev->bulk_out_mps = max_packet;
+                        z_printf("xchi: bulk OUT ep=%d dci=%d mps=%d\n", 
+                                 ep_addr & 0x0F, xdev->bulk_out_dci, max_packet);
+                    }
+                }
+            }
+            i += len;
+        }
+        
+        // If it's a mass storage device (class 8, subclass 6, protocol 0x50 = BOT)
+        if(xdev->class == 8 && xdev->subclass == 6 && xdev->protocol == 0x50) {
+            print_color("xchi: Mass Storage Device (BOT) detected!\n", VGA_COLOR_LIGHT_GREEN);
+            
+            // Configure endpoints if we found bulk IN/OUT
+            if(xdev->bulk_in_dci && xdev->bulk_out_dci) {
+                if(xchi_configure_bulk_endpoints(xdev) == 0) {
+                    // Attach MSC driver
+                    extern void usbmsc_attach_xchi(xchi_device_t*);
+                    usbmsc_attach_xchi(xdev);
+                }
+            }
+        }
+    }
  
     return 0;
 }
@@ -813,9 +937,12 @@ int xchi_bulk_transfer(xchi_device_t* xdev, void* buf, unsigned int len, int is_
     u64 phys = XCHI_PHYS(buf);
     trb->param_lo = (u32)(phys & 0xFFFFFFFF);
     trb->param_hi = (u32)(phys >> 32);
-    trb->status = len;
+    // Status field: bits 16:0 = transfer length, bits 21:17 = TD Size (0 for single TRB), bits 31:22 = Interrupter Target (0)
+    trb->status = (len & 0x1FFFF);  // Transfer length in lower 17 bits
+    // Control field: set cycle bit, IOC (interrupt on completion), and TRB type
     trb->control = TRB_IOC;
     TRB_SET_TYPE(trb, TRB_TYPE_NORMAL);
+    // Set cycle bit last (makes TRB visible to controller)
     trb->control = (trb->control & ~TRB_CYCLE) | (*cycle & TRB_CYCLE);
 
     (*enq_idx)++;
