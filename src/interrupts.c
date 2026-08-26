@@ -53,17 +53,17 @@ void interrupts_init(void)
     idt_set_gate(5,  (uint64_t)isr5,  0x08, 0, 0x8E);
     idt_set_gate(6,  (uint64_t)isr6,  0x08, 0, 0x8E);
     idt_set_gate(7,  (uint64_t)isr7,  0x08, 0, 0x8E);
-    idt_set_gate(8,  (uint64_t)isr8,  0x08, 0, 0x8E);  // TODO: set ist=1 once you have a double-fault stack
+    idt_set_gate(8,  (uint64_t)isr8,  0x08, 1, 0x8E);  // TODO: set ist=1 once you have a double-fault stack
     idt_set_gate(9,  (uint64_t)isr9,  0x08, 0, 0x8E);
     idt_set_gate(10, (uint64_t)isr10, 0x08, 0, 0x8E);
     idt_set_gate(11, (uint64_t)isr11, 0x08, 0, 0x8E);
     idt_set_gate(12, (uint64_t)isr12, 0x08, 0, 0x8E);
-    idt_set_gate(13, (uint64_t)isr13, 0x08, 0, 0x8E);
-    idt_set_gate(14, (uint64_t)isr14, 0x08, 0, 0x8E);
+    idt_set_gate(13, (uint64_t)isr13, 0x08, 1, 0x8E);
+    idt_set_gate(14, (uint64_t)isr14, 0x08, 1, 0x8E);
     idt_set_gate(15, (uint64_t)isr15, 0x08, 0, 0x8E);
     idt_set_gate(16, (uint64_t)isr16, 0x08, 0, 0x8E);
     idt_set_gate(17, (uint64_t)isr17, 0x08, 0, 0x8E);
-    idt_set_gate(18, (uint64_t)isr18, 0x08, 0, 0x8E);
+    idt_set_gate(18, (uint64_t)isr18, 0x08, 1, 0x8E);
     idt_set_gate(19, (uint64_t)isr19, 0x08, 0, 0x8E);
     idt_set_gate(20, (uint64_t)isr20, 0x08, 0, 0x8E);
     idt_set_gate(21, (uint64_t)isr21, 0x08, 0, 0x8E);

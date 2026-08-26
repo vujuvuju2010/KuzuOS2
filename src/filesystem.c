@@ -1145,13 +1145,8 @@ void ramdisk_preload_from_usb(usb_device_t* dev, uint32_t start_lba, uint32_t se
     print("Copying ISO from USB to RAM (read-only USB -> RAM, RW enabled)\n");
     print("Starting USB read... (this may take a while)\n");
 
-    // Read sector by sector with delays to avoid USB timeouts
+    // Read sector by sector - no delays needed with proper timeouts
     for (uint32_t i = 0; i < sector_count; i++) {
-        // Longer delay every sector to prevent USB issues
-        if ((i & 0x7) == 0x7) {
-            for (volatile int d = 0; d < 100000; d++);
-        }
-        
         int r = msc_read_sector(dev, start_lba + i, tmp);
         
         if (r != 0) {
@@ -1167,8 +1162,8 @@ void ramdisk_preload_from_usb(usb_device_t* dev, uint32_t start_lba, uint32_t se
                 break;
             }
             
-            // Longer delay after error
-            for (volatile int d = 0; d < 500000; d++);
+            // Brief delay after error only
+            for (volatile int d = 0; d < 100000; d++);
         } else {
             consecutive_errors = 0;
         }
@@ -1267,11 +1262,14 @@ void ramdisk_preload_from_lba(uint32_t start_lba, uint32_t sector_count) {
 
     char tmp[512];
     uint32_t total = sector_count;
-    uint32_t last_shown_percent = 101;
-    const uint32_t bar_width = 30;
+    uint32_t last_shown_mb = 0xFFFFFFFF; // Track last shown MB instead of percent
+    const uint32_t bar_width = 40;
     uint32_t read_errors = 0;
 
     print("Copying system image to RAM (read-only ISO -> RAM, RW enabled)\n");
+    
+    uint32_t total_mb = (total * 512) / (1024*1024);
+    z_printf("Loading 0MB / %uMB\n", total_mb);
 
     #define BATCH_SIZE 16
     for (uint32_t i = 0; i < sector_count && (start_lba + i) < ramdisk_total_sectors; ) {
@@ -1315,44 +1313,20 @@ void ramdisk_preload_from_lba(uint32_t start_lba, uint32_t sector_count) {
 
         uint32_t done = i;
         if (total == 0) total = 1; // avoid div by zero
-        uint32_t percent = (done * 100) / total;
-        if (percent >= last_shown_percent + 5 || done == total) {
-            last_shown_percent = percent;
-            char bar[31];
+        uint32_t mb_done = (done * 512) / (1024*1024);
+        uint32_t mb_total = (total * 512) / (1024*1024);
+        
+        // Update every megabyte or at completion
+        if (mb_done != last_shown_mb || done == total) {
+            last_shown_mb = mb_done;
+            
+            uint32_t percent = (done * 100) / total;
+            char bar[41];
             uint32_t filled = (percent * bar_width) / 100;
             for (uint32_t j = 0; j < bar_width; j++) bar[j] = (j < filled) ? '#' : '-';
             bar[bar_width] = '\0';
 
-            print("  ["); print(bar); print("] ");
-            // Percent
-            char pbuf[4]; int p = percent; int ppos = 0;
-            if (p == 0) pbuf[ppos++] = '0';
-            else {
-                char rev[4]; int rp = 0;
-                while (p > 0 && rp < 3) { rev[rp++] = '0' + (p % 10); p /= 10; }
-                while (rp--) pbuf[ppos++] = rev[rp];
-            }
-            pbuf[ppos] = 0; print(pbuf); print("%  ");
-            // MB
-            uint32_t mb_done = (done * 512) / (1024*1024);
-            uint32_t mb_total = (total * 512) / (1024*1024);
-            char nbuf[16]; int npos = 0;
-            if (mb_done == 0) nbuf[npos++] = '0';
-            else {
-                char revn[16]; int rn = 0;
-                while (mb_done > 0) { revn[rn++] = '0' + (mb_done % 10); mb_done /= 10; }
-                while (rn--) nbuf[npos++] = revn[rn];
-            }
-            nbuf[npos] = 0; print(nbuf);
-            print("MB/");
-            npos = 0;
-            if (mb_total == 0) nbuf[npos++] = '0';
-            else {
-                char revt[16]; int rt = 0;
-                while (mb_total > 0) { revt[rt++] = '0' + (mb_total % 10); mb_total /= 10; }
-                while (rt--) nbuf[npos++] = revt[rt];
-            }
-            nbuf[npos] = 0; print(nbuf); print("MB\n");
+            z_printf("\r[%s] %uMB / %uMB (%u%%)  ", bar, mb_done, mb_total, percent);
         }
     }
 
@@ -1397,7 +1371,7 @@ void fs_late_init() {
         // Now try to detect ISO on USB 3.0
         print("Detecting ISO filesystem on USB 3.0...\n");
         uint32_t iso_blocks = 0;
-        if (iso_get_volume_size_blocks(&iso_blocks) == 0) {
+        if (iso_get_volume_size_blocks(&iso_blocks) == 0 && iso_blocks > 0) {
             print_color("ISO filesystem detected on USB 3.0!\n", VGA_COLOR_LIGHT_GREEN);
             char sbuf[16]; int pos = 0; uint32_t v = iso_blocks;
             if (v == 0) sbuf[pos++] = '0';
@@ -1407,15 +1381,37 @@ void fs_late_init() {
                 while (rp--) sbuf[pos++] = rev[rp];
             }
             sbuf[pos] = 0; print("ISO size: "); print(sbuf); print(" blocks\n");
+            
+            // Copy ISO to RAM just like CD/DVD does
+            uint32_t clone_sectors = iso_blocks * 4;
+            if (clone_sectors == 0) {
+                clone_sectors = 8192;
+            }
+            if (clone_sectors > ramdisk_total_sectors) {
+                clone_sectors = ramdisk_total_sectors;
+            }
+            
+            pos = 0; v = clone_sectors;
+            if (v == 0) sbuf[pos++] = '0';
+            else {
+                char rev[16]; int rp = 0;
+                while (v) { rev[rp++] = '0' + (v % 10); v /= 10; }
+                while (rp--) sbuf[pos++] = rev[rp];
+            }
+            sbuf[pos] = 0; print("Loading "); print(sbuf); print(" sectors from USB 3.0\n");
+            
+            ramdisk_preload_from_lba(0, clone_sectors);
+            
+            if (fs_disk_test() != 0) {
+                print("USB 3.0 filesystem test failed\n");
+            } else {
+                print_color("USB 3.0 boot successful :)\n", VGA_COLOR_LIGHT_GREEN);
+            }
+            return; // Success - booted from USB 3.0
         } else {
-            print_color("WARNING: No ISO detected on USB 3.0, trying raw filesystem\n", VGA_COLOR_YELLOW);
+            print_color("No bootable ISO on USB 3.0, trying other devices...\n", VGA_COLOR_YELLOW);
+            boot_from_usb = 0; // Reset flag so we can try CD-ROM
         }
-        
-        // Init filesystem header
-        fs_ensure_header_initialized();
-        
-        print_color("USB 3.0 boot complete - system ready!\n", VGA_COLOR_LIGHT_GREEN);
-        return;
     }
     
     // Fall back to USB 2.0 (EHCI)
@@ -1441,14 +1437,37 @@ void fs_late_init() {
                 while (rp--) sbuf[pos++] = rev[rp];
             }
             sbuf[pos] = 0; print("ISO size: "); print(sbuf); print(" blocks\n");
+            
+            // Copy ISO to RAM just like CD/DVD does
+            uint32_t clone_sectors = iso_blocks * 4;
+            if (clone_sectors == 0) {
+                clone_sectors = 8192;
+            }
+            if (clone_sectors > ramdisk_total_sectors) {
+                clone_sectors = ramdisk_total_sectors;
+            }
+            
+            pos = 0; v = clone_sectors;
+            if (v == 0) sbuf[pos++] = '0';
+            else {
+                char rev[16]; int rp = 0;
+                while (v) { rev[rp++] = '0' + (v % 10); v /= 10; }
+                while (rp--) sbuf[pos++] = rev[rp];
+            }
+            sbuf[pos] = 0; print("Loading "); print(sbuf); print(" sectors from USB 2.0\n");
+            
+            ramdisk_preload_from_lba(0, clone_sectors);
+            
+            if (fs_disk_test() != 0) {
+                print("USB 2.0 filesystem test failed\n");
+            } else {
+                print_color("USB 2.0 boot successful :)\n", VGA_COLOR_LIGHT_GREEN);
+            }
         } else {
             print_color("WARNING: No ISO detected on USB, trying raw filesystem\n", VGA_COLOR_YELLOW);
+            fs_ensure_header_initialized();
         }
         
-        // Init filesystem header
-        fs_ensure_header_initialized();
-        
-        print_color("USB 2.0 boot complete - system ready!\n", VGA_COLOR_LIGHT_GREEN);
         return;
     }
     

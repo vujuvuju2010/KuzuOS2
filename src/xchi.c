@@ -511,7 +511,7 @@ static void xchi_ep0_commit(xchi_device_t* xdev, trb_t* trb, int ring_doorbell){
 /* wait for a transfer event tied to this device's ep0 ring. same polling pattern as
    xchi_wait_command_completion, just matching TRB_TYPE_TRANSFER_EVENT instead. */
 static int xchi_wait_transfer_completion(trb_t* out_event){
-    int timeout = 5000000;
+    int timeout = 10000000; // Reasonable timeout for USB devices
     while(timeout--){
         trb_t* ev;
         if(xchi_event_peek(&ev) == 0){
@@ -522,6 +522,10 @@ static int xchi_wait_transfer_completion(trb_t* out_event){
             }
             xchi_event_advance(); // drain anything else (port status change etc.)
             continue;
+        }
+        // Tiny delay to avoid hammering the event ring
+        if((timeout & 0xFF) == 0) {
+            for(volatile int i = 0; i < 10; i++);
         }
     }
     z_printf("xchi: transfer completion timeout shat itself :(\n");
@@ -963,5 +967,6 @@ int xchi_bulk_transfer(xchi_device_t* xdev, void* buf, unsigned int len, int is_
         z_printf("xchi: bulk transfer failed, completion code=%d\n", cc);
         return -1;
     }
+    
     return 0;
 }

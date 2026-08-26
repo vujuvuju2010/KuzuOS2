@@ -114,14 +114,6 @@ mov [fb_height], eax
     
     ; lik big papi
     add esp, 8
-    jmp .halt
-
-.call_kernel:
-    ; call big papi
-    call long_mode_init ; call the long mode papi
-    
-    ; lik big papi
-    add esp, 8
     
 .halt: ;ezik 32 bit halt
     cli
@@ -150,6 +142,13 @@ align 16
 stack64_bottom:
     resb 16384 * 4
 stack64_top:
+
+global ist1_stack_bottom
+global ist1_stack_top
+align 16
+ist1_stack_bottom:
+    resb 16384
+ist1_stack_top:
 
 section .rodata
 align 8

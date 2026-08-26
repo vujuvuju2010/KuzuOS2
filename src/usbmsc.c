@@ -47,18 +47,24 @@ static int ehci_bulk(unsigned int addr, unsigned int ep, void* buf, unsigned int
     // funfact: i got the admin acc for 52 ;)
    async_head->next = (unsigned int)qh | 0x02;  // link QH into async list
 
-int timeout = 10000000;
-while ((qtd->token & QTD_ACTIVE) && --timeout);
+int timeout = 8000000; // Conservative timeout for USB 2.0 stability
+while ((qtd->token & QTD_ACTIVE) && --timeout) {
+    // Tiny delay every 128 iterations
+    if((timeout & 0x7F) == 0) {
+        for (volatile int w = 0; w < 5; w++);
+    }
+}
 
-for (volatile int w = 0; w < 1000; w++);
+for (volatile int w = 0; w < 100; w++); // Small stabilization delay
 
 async_head->next = (unsigned int)async_head | 0x02; // unlink
 
-// HEYYY WAITTT
-for (volatile int w = 0; w < 10000; w++);
+// Brief wait after unlink
+for (volatile int w = 0; w < 1000; w++);
 
 if (timeout == 0) {
     print_color("msc bulk shat itself :( \n", VGA_COLOR_RED);
+    z_printf("ehci_bulk timeout: addr=%d ep=%d len=%u is_in=%d\n", addr, ep, len, is_in);
     return -1;
 }
 if (qtd->token & (1 << 7)) { // halted
@@ -94,15 +100,14 @@ int msc_send_cum(usb_device_t* dev, unsigned char* cb, unsigned char cb_len, voi
         return -1; // fuku
     } 
     
-    for(volatile int t = 0; t < 500000; t++); // HEYYYY WAITTTTT
+    // Minimal delay for USB 2.0 stability
+    for(volatile int t = 0; t < 1000; t++);
+    
     // ikinci aşamağğ veri tükürme
 if(data_len > 0){
     if(ehci_bulk(dev->addr, is_in ? dev->bulk_in : dev->bulk_out, data, data_len, is_in) !=0)
         return -1;
 }
-
-// HEYYY WAITTT I GOT A NEWW TIMEEEOUUTTT FOREVERRR IN DEPTH TO YOURR PRICELESS İ VALUEEE
-// for(volatile int t = 0; t < 100000; t++); // dur process bu bastığın register...
 
 // phase 3 CSW
 if(ehci_bulk(dev->addr, dev->bulk_in, csw, 13 ,1) !=0)
@@ -248,7 +253,8 @@ int msc_send_cum_xchi(xchi_device_t* xdev, unsigned char* cb, unsigned char cb_l
         return -1;
     }
 
-    for(volatile int t = 0; t < 500000; t++); // HEYYY WAITTTTT
+    // Minimal delay for USB stability
+    for(volatile int t = 0; t < 1000; t++);
 
     // phase 2: data phase
     if(data_len > 0){
