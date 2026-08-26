@@ -2,39 +2,45 @@ section .text
 global z_syscall
 
 z_syscall:
-	; x86-64 System V ABI calling convention:
-	; Arguments arrive in: rdi, rsi, rdx, rcx, r8, r9, [stack...]
-	; We need to rearrange them for syscall convention:
-	; Syscall expects: rax=syscall#, rdi=arg1, rsi=arg2, rdx=arg3, r10=arg4, r8=arg5, r9=arg6
+	; x86-64 System V ABI calling convention (how C calls us):
+	; param1=rdi, param2=rsi, param3=rdx, param4=rcx, param5=r8, param6=r9, param7=[stack]
+	;
+	; KuzuOS interrupt handler expects (from interrupts.c):
+	; rax=syscall_num, rbx=arg1, rcx=arg2, rdx=arg3, rsi=arg4, rdi=arg5, rbp=arg6
+	;
+	; Our C signature: z_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
+	; So we receive:    z_syscall(rdi,        rsi,  rdx,  rcx,  r8,   r9,   [stack])
+	; Need to arrange: (rax,                  rbx,  rcx,  rdx,  rsi,  rdi,  rbp)
 	
-	; Save registers that will be clobbered
-	push	rbp
+	; Save registers we'll clobber
 	push	rbx
-	push	r10
+	push	rbp
 	
-	; Rearrange arguments:
-	; rdi = syscall number (arg1) -> rax
-	; rsi = arg2 -> rdi
-	; rdx = arg3 -> rsi
-	; rcx = arg4 -> rdx
-	; r8  = arg5 -> r10
-	; r9  = arg6 -> r8
-	; [rsp+...] = arg7 -> r9
+	; Move syscall number to rax
+	mov	rax, rdi	; syscall_num: rdi -> rax
 	
-	mov	rax, rdi	; syscall number
-	mov	rdi, rsi	; arg2 -> arg1 position
-	mov	rsi, rdx	; arg3 -> arg2 position
-	mov	r10, rcx	; arg4 -> r10 (syscall uses r10 instead of rcx)
-	; r8 already has arg5
-	; r9 already has arg6
-	mov	rbp, [rsp + 24]	; arg7 from stack (after 3 pushes = 24 bytes)
+	; Now rearrange arguments (careful about conflicts!):
+	mov	rbx, rsi	; arg1: rsi -> rbx
+	; rcx already has arg3 from C calling convention, but kernel expects it as arg2
+	; rdx already has arg2 from C, but kernel expects it as arg3
+	; So we need to swap rcx and rdx!
+	mov	r10, rcx	; save arg3 (rcx) temporarily
+	mov	rcx, rdx	; arg2: rdx -> rcx  
+	mov	rdx, r10	; arg3: (saved rcx) -> rdx
+	; rsi needs arg4 (which is r8)
+	mov	rsi, r8		; arg4: r8 -> rsi
+	; rdi needs arg5 (which is r9)
+	mov	rdi, r9		; arg5: r9 -> rdi
+	; rbp needs arg6 (which is on stack)
+	mov	rbp, [rsp + 16]	; arg6: stack -> rbp (after 2 pushes = 16 bytes)
 	
-	; Jump to kernel, return value comes to rax
+	; Execute syscall
 	int	0x80
 	
-	; Restore preserved registers
-	pop	r10
-	pop	rbx
+	; Return value is in rax - leave it there
+	
+	; Restore saved registers
 	pop	rbp
+	pop	rbx
 	ret
 

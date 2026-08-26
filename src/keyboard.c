@@ -150,6 +150,25 @@ void keyboard_poll() {
     if (release)
         return;
 
+    // Debug: print keycode and ctrl state
+    if (ctrl) {
+        extern void z_printf(const char* fmt, ...);
+        z_printf("[KEY] ctrl=1, keycode=%d\n", keycode);
+    }
+
+    // Handle Ctrl+Z (stop process) - push special marker character
+    // Keycode 44 = Z key
+    if (ctrl && keycode == 44) {
+        push_char(26);  // ASCII SUB (Ctrl+Z marker)
+        return;
+    }
+    
+    // Handle Ctrl+C (interrupt) - keycode 46 = C key
+    if (ctrl && keycode == 46) {
+        push_char(3);  // ETX character
+        return;
+    }
+
     // Apply caps lock only to letters, not to shift state for keymap
     int use_shift = shift;
     if (caps_lock && is_letter_keycode(keycode))

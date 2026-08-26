@@ -181,6 +181,33 @@ static void execute_command(char* input) {
     }
 }
 
+// Init process - just loops forever as PID 1 and respawns shell if it dies
+void init_run() {
+    while (1) {
+        // Check if shell is dead and respawn it
+        extern struct process* shell_process;
+        extern uint32_t process_create_shell(void);
+        extern struct process* process_find(uint32_t pid);
+        
+        if (!shell_process || shell_process->state == PROCESS_TERMINATED) {
+            extern void print_color(const char* s, uint8_t color);
+            print_color("\n[init] Shell died, respawning...\n", 0x0E);
+            uint32_t shell_pid = process_create_shell();
+            if (shell_pid) {
+                shell_process = process_find(shell_pid);
+                if (shell_process) {
+                    shell_process->state = PROCESS_READY;
+                }
+            }
+        }
+        
+        // Yield to other processes
+        extern void process_yield(void);
+        process_yield();
+        __asm__ volatile("hlt");
+    }
+}
+
 void shell_run() {
     char input[256];
 

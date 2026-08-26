@@ -51,6 +51,7 @@ int strlen(const char* str) {
 struct process* process_list = 0;
 struct process* current_process = 0;
 struct process* shell_process = 0;
+struct process* init_process = 0;
 uint32_t next_pid = 1;
 
 void process_init() {
@@ -58,6 +59,7 @@ void process_init() {
     process_list = 0;
     current_process = 0;
     shell_process = 0;
+    init_process = 0;
     next_pid = 1;
 }
 
@@ -404,4 +406,126 @@ void process_switch_to_shell() {
             context_restore(&shell_process->context);
         }
     }
+}
+
+// Stop current process (for Ctrl+Z)
+void process_stop_current() {
+    if (!current_process || current_process == shell_process) {
+        return;  // Can't stop shell
+    }
+    
+    print_color("\n[Process ", VGA_COLOR_LIGHT_GREY);
+    char buf[16];
+    int pos = 0;
+    uint32_t pid = current_process->pid;
+    if (pid == 0) {
+        buf[pos++] = '0';
+    } else {
+        char tmp[16];
+        int tp = 0;
+        while (pid > 0 && tp < 15) {
+            tmp[tp++] = '0' + (pid % 10);
+            pid /= 10;
+        }
+        while (tp--) buf[pos++] = tmp[tp];
+    }
+    buf[pos] = 0;
+    print(buf);
+    print(" stopped]\n");
+    
+    // Mark as stopped
+    current_process->state = PROCESS_STOPPED;
+    
+    // Switch to shell
+    process_switch_to_shell();
+}
+
+// Continue a stopped process by PID
+int process_continue(uint32_t pid) {
+    struct process* p = process_find(pid);
+    if (!p) {
+        return -1;  // Process not found
+    }
+    
+    if (p->state != PROCESS_STOPPED) {
+        return -2;  // Process not stopped
+    }
+    
+    p->state = PROCESS_READY;
+    return 0;
+}
+
+// Kill process by PID
+int process_kill(uint32_t pid) {
+    struct process* p = process_find(pid);
+    if (!p) {
+        return -1;  // Process not found
+    }
+    
+    if (p == init_process) {
+        return -3;  // Can't kill init
+    }
+    
+    // Allow killing shell - init will respawn it
+    
+    // If killing current process, exit it properly
+    if (p == current_process) {
+        process_exit_current(128 + 9);  // SIGKILL
+        return 0;
+    }
+    
+    // Otherwise mark as terminated and remove
+    p->state = PROCESS_TERMINATED;
+    p->exit_code = 128 + 9;
+    
+    // Free resources
+    if (p->stack) {
+        kfree((void*)p->stack);
+    }
+    if (p->heap_start) {
+        kfree((void*)p->heap_start);
+    }
+    if (p->elf_filename_ptr) {
+        kfree(p->elf_filename_ptr);
+    }
+    
+    // Remove from list
+    if (p->prev) {
+        p->prev->next = p->next;
+    } else {
+        process_list = p->next;
+    }
+    if (p->next) {
+        p->next->prev = p->prev;
+    }
+    
+    // If killing shell, clear the shell_process pointer so init can respawn
+    if (p == shell_process) {
+        shell_process = 0;
+    }
+    
+    kfree(p);
+    return 0;
+}
+
+// Get process count
+int process_count() {
+    int count = 0;
+    struct process* p = process_list;
+    while (p) {
+        count++;
+        p = p->next;
+    }
+    return count;
+}
+
+// Get process list (for ps command)
+int process_get_list(struct process** out_list, int max_count) {
+    int count = 0;
+    struct process* p = process_list;
+    while (p && count < max_count) {
+        out_list[count++] = p;
+        p = p->next;
+    }
+    return count;
 } 

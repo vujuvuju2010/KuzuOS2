@@ -334,6 +334,18 @@ loadkeys: loadkeys.o libkuzu.a
 loadkeys.o: src/loadkeys.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+ps: ps.o libkuzu.a
+	$(LD) -m elf_x86_64 -s -Ttext=0x00400000 -o $@ ps.o libkuzu.a
+
+ps.o: src/ps.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+kill: kill.o libkuzu.a
+	$(LD) -m elf_x86_64 -s -Ttext=0x00400000 -o $@ kill.o libkuzu.a
+
+kill.o: src/kill.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 # TinyCC Compiler (using real TinyCC libtcc only, skip tcc.c main)
 # All TinyCC modules are #included in libtcc.c when ONE_SOURCE=1
 tcc: tcc_start.o tinycc_kuzuos.o tinycc_libtcc.o libkuzu.a
@@ -387,10 +399,10 @@ iso/boot/grub/grub.cfg:
 KBD_INC ?= /usr/share/kbd/keymaps/i386/include
 KBD_COMPOSE ?= /usr/share/kbd/keymaps/include
 
-kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys hello.c index.html banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map
+kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill hello.c index.html banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map
 	mkdir -p iso/boot iso/dev iso/lib iso/dev/keys iso/www
 	cp kernel.bin iso/boot/
-	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys iso/dev/
+	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill iso/dev/
 	cp hello.c iso/dev/
 	cp index.html iso/www/
 	cp banner_frames/*.bin iso/dev/
@@ -408,7 +420,7 @@ kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear 
 # Utilities
 # --------------------------------------------------------------------
 clean:
-	rm -f *.o kernel.bin kuzuos.iso echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping loadkeys net_ip.o ip_user.o
+	rm -f *.o kernel.bin kuzuos.iso echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping loadkeys ps kill net_ip.o ip_user.o
 	rm -f libkuzu.a kuzulib/*.o
 	rm -f /tmp/ctype_stub.c libc_*.o
 	rm -rf iso

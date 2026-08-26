@@ -261,6 +261,22 @@ void usbkbd_poll(void)
 
     old_key = key;
 
+    // Check for Ctrl+Z (stop process) and Ctrl+C (interrupt) before character conversion
+    unsigned char modifiers = report[0];
+    int ctrl = (modifiers & 0x11) != 0;  // Left or Right Ctrl
+    
+    // USB HID: 0x1D = Z key, 0x06 = C key
+    if (ctrl && key == 0x1D) {  // Ctrl+Z
+        extern void process_stop_current(void);
+        process_stop_current();
+        return;
+    }
+    
+    if (ctrl && key == 0x06) {  // Ctrl+C
+        usbkbd_push_char(3);  // ETX character
+        return;
+    }
+
     char c = usbkbd_convert(key, report[0]);
 
     if(c)
@@ -307,6 +323,22 @@ void usbkbd_poll_device(usb_device_t* dev)
         return;
 
     old_key = key;
+
+    // Check for Ctrl+Z (stop process) and Ctrl+C (interrupt) before character conversion
+    unsigned char modifiers = report[0];
+    int ctrl = (modifiers & 0x11) != 0;  // Left or Right Ctrl
+    
+    // USB HID: 0x1D = Z key, 0x06 = C key
+    if (ctrl && key == 0x1D) {  // Ctrl+Z
+        extern void process_stop_current(void);
+        process_stop_current();
+        return;
+    }
+    
+    if (ctrl && key == 0x06) {  // Ctrl+C
+        usbkbd_push_char(3);  // ETX character
+        return;
+    }
 
     char c =
         usbkbd_convert(

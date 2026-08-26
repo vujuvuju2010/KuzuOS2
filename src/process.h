@@ -12,6 +12,7 @@ typedef unsigned long long uint64_t;
 #define PROCESS_RUNNING 1
 #define PROCESS_BLOCKED 2
 #define PROCESS_TERMINATED 3
+#define PROCESS_STOPPED 4  // Stopped by Ctrl+Z
 
 
 struct vfs_node; // forward declare that bad bih 
@@ -98,6 +99,11 @@ void process_yield();
 void process_exit_current(int exit_code);
 void process_remove(uint32_t pid);
 void process_switch_to_shell();
+void process_stop_current();
+int process_continue(uint32_t pid);
+int process_kill(uint32_t pid);
+int process_count();
+int process_get_list(struct process** out_list, int max_count);
 struct process* process_find(uint32_t pid);
 
 // Context initialization
@@ -111,6 +117,7 @@ void context_switch(struct process* from, struct process* to);
 // Current process
 extern struct process* current_process;
 extern struct process* shell_process;
+extern struct process* init_process;
 extern uint32_t next_pid;
 
 #endif 

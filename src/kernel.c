@@ -264,12 +264,47 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr) {
     tss_set_kernel_stack(current_rsp);
 
     // Create shell as a process
+    extern uint32_t process_create(char* name, void* entry_point, uint64_t stack_size);
     extern uint32_t process_create_shell();
     extern struct process* process_find(uint32_t pid);
     extern void context_restore(struct cpu_context* ctx);
     extern struct process* current_process;
     extern struct process* shell_process;
+    extern struct process* init_process;
     
+    // Create init process (PID 1) - just an idle loop that never exits
+    extern void init_run(void);
+    uint32_t init_pid = process_create("init", (void*)init_run, 8192);
+    print_color("[DEBUG] init_pid=", VGA_COLOR_LIGHT_CYAN);
+    char initbuf[16];
+    int initval = init_pid;
+    int initpos = 0;
+    if (initval == 0) {
+        initbuf[initpos++] = '0';
+    } else {
+        char rev[16];
+        int rp = 0;
+        while (initval > 0 && rp < 15) {
+            rev[rp++] = '0' + (initval % 10);
+            initval /= 10;
+        }
+        while (rp > 0) {
+            initbuf[initpos++] = rev[--rp];
+        }
+    }
+    initbuf[initpos] = '\0';
+    print_color(initbuf, VGA_COLOR_LIGHT_CYAN);
+    print_color("\n", VGA_COLOR_LIGHT_CYAN);
+    
+    if (init_pid) {
+        init_process = process_find(init_pid);
+        if (init_process) {
+            init_process->state = PROCESS_READY;  // Init just waits
+            print_color("[DEBUG] init process created\n", VGA_COLOR_LIGHT_CYAN);
+        }
+    }
+    
+    // Create shell process (PID 2)
     uint32_t shell_pid = process_create_shell();
     print_color("[DEBUG] shell_pid=", VGA_COLOR_LIGHT_CYAN);
     char pidbuf[16];

@@ -709,6 +709,49 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
             return 0;
         }
 
+        // ==================== Process Control ====================
+        case 1000: {  // SYS_GETPROCESSLIST
+            // Get list of all processes
+            struct process_info {
+                uint32_t pid;
+                uint32_t state;
+                char name[32];
+            };
+            
+            struct process_info* info_list = (struct process_info*)arg1;
+            int max_count = (int)arg2;
+            
+            if (!info_list || max_count <= 0) {
+                return -1;
+            }
+            
+            // Get process pointers
+            struct process* temp_list[256];
+            extern int process_get_list(struct process** out_list, int max_count);
+            int actual_count = process_get_list(temp_list, max_count < 256 ? max_count : 256);
+            
+            // Copy to userspace-safe struct
+            for (int i = 0; i < actual_count; i++) {
+                info_list[i].pid = temp_list[i]->pid;
+                info_list[i].state = temp_list[i]->state;
+                int j = 0;
+                while (j < 31 && temp_list[i]->name[j]) {
+                    info_list[i].name[j] = temp_list[i]->name[j];
+                    j++;
+                }
+                info_list[i].name[j] = '\0';
+            }
+            
+            return actual_count;
+        }
+        
+        case 1001: {  // SYS_KILLPROCESS
+            // Kill process by PID
+            uint32_t pid = (uint32_t)arg1;
+            extern int process_kill(uint32_t pid);
+            return process_kill(pid);
+        }
+
         default:
             // Unknown syscall - try original handler
             return handle_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6);
