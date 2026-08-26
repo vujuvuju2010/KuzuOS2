@@ -38,6 +38,7 @@ static void pci_write(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, u
 
 // ---- MMIO helpers ----
 static uint32_t e1000_mmio_base = 0;
+static int e1000_initialized = 0; // Track if NIC is actually present
 
 static inline uint32_t e1000_read(uint32_t reg) {
     return *((volatile uint32_t*)(e1000_mmio_base + reg));
@@ -98,6 +99,7 @@ int e1000_init(void) {
     uint8_t bus, slot;
     if (!e1000_pci_find(&bus, &slot)) {
         print_color("[e1000] NIC not found on PCI bus\n", VGA_COLOR_LIGHT_RED);
+        e1000_initialized = 0;
         return -1;
     }
     print_color("[e1000] Found Intel 82540EM NIC\n", VGA_COLOR_LIGHT_GREEN);
@@ -188,6 +190,7 @@ e1000_write(E1000_REG_RCTL, rctl);
     e1000_write(E1000_REG_TIPG, 0x0060200A);
     e1000_write(E1000_REG_IMS, (1 << 7));
 
+    e1000_initialized = 1;
     print_color("[e1000] NIC initialized\n", VGA_COLOR_LIGHT_GREEN);
     return 0;
 }
@@ -215,6 +218,11 @@ int e1000_send(uint8_t* data, uint16_t len) {
 */
 
 int e1000_send(uint8_t* data, uint16_t len) {
+    if (!e1000_initialized) {
+        print_color("[e1000] send failed: NIC not initialized\n", VGA_COLOR_LIGHT_RED);
+        return -1;
+    }
+    
     if (len > E1000_BUFFER_SIZE) return -1;
 
     // Very cheap debug: look at first byte (dest MAC[0]) or ethertype
@@ -252,6 +260,10 @@ int e1000_send(uint8_t* data, uint16_t len) {
     return 0;
 }
 void e1000_poll(void) {
+    if (!e1000_initialized) {
+        return;
+    }
+    
     // Clear interrupt cause 
     e1000_read(E1000_REG_ICR);
 

@@ -18,7 +18,7 @@ kernel.bin: boot.o kernel.o usb.o usbmsc.o keyboardusb.o vfs.o tty.o memory.o pm
             gdt_flush.o loader_kernel.o enter_user_mode.o \
             context_switch.o elf_loader.o \
             z_printf.o z_utils.o z_err.o z_trampo.o \
-            net.o e1000.o ethernet.o arp.o net_ip.o tcp.o \
+            net.o e1000.o ethernet.o arp.o net_ip.o tcp.o udp.o dns.o \
             keymap_loader.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
@@ -158,6 +158,12 @@ net_ip.o: src/internet/ip.c src/internet/ip.h src/internet/ethernet.h src/intern
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 tcp.o: src/internet/tcp.c src/internet/tcp.h src/internet/ip.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+udp.o: src/internet/udp.c src/internet/ip.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+dns.o: src/internet/dns.c src/internet/dns.h src/internet/ip.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # --------------------------------------------------------------------

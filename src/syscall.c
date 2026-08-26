@@ -430,6 +430,12 @@ case SYS_LSUSB: {
             icmp_clear_reply_flag();
             return 0;
         }
+        case SYS_NET_DNS_LOOKUP: {
+            extern int dns_lookup(const char* hostname, uint32_t* out_ip);
+            const char* hostname = (const char*)arg1;
+            uint32_t* out_ip = (uint32_t*)arg2;
+            return dns_lookup(hostname, out_ip);
+        }
 
         /* ── Unknown ─────────────────────────────────────────── */
         default: {

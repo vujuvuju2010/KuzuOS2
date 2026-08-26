@@ -20,6 +20,19 @@ typedef struct {
     ip_addr_t dst;
 } __attribute__((packed)) ip_header_t;
 
+
+typedef struct {
+    uint16_t src_port;
+    uint16_t dst_port;
+    uint16_t length;
+    uint16_t checksum;
+} __attribute__((packed)) udp_header_t;
+
+int udp_send(ip_addr_t dst_ip, uint16_t src_port, uint16_t dst_port,
+             uint8_t* payload, uint16_t len);
+void udp_receive(ip_addr_t src_ip, uint8_t* data, uint16_t len);
+int udp_poll_response(uint8_t* buf, uint16_t* len_out);
+
 #define IP_HEADER_SIZE  20
 
 #define ICMP_ECHO_REQUEST  8

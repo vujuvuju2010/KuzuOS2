@@ -103,6 +103,9 @@ void ip_receive(uint8_t* data, uint16_t len) {
         case IP_PROTO_ICMP:
             icmp_receive(hdr->src, hdr->dst, payload, payload_len);
             break;
+        case IP_PROTO_UDP:
+            udp_receive(ntohl(hdr->src), payload, payload_len);
+            break;
         default:
             break;
     }
@@ -141,13 +144,11 @@ int icmp_ping(ip_addr_t dst_ip) {
 
     int r = ip_send(dst_ip, IP_PROTO_ICMP, buf, icmp_len);
     if (r < 0) {
-        print_color("ping send failed\n", VGA_COLOR_LIGHT_RED);
         icmp_pending   = 0;
         icmp_got_reply = 0;
         return -1;
     }
 
-    print_color("ping sent\n", VGA_COLOR_LIGHT_GREEN);
     return 0;
 }
 

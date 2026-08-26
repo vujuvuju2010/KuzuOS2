@@ -8,17 +8,21 @@ static inline int syscall0(int n) {
 static inline int syscall1(int n, int a) {
     int r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"b"(a)); return r;
 }
+static inline int syscall2(int n, int a, int b) {
+    int r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"b"(a),"c"(b)); return r;
+}
 static inline int syscall3(int n, int a, int b, int c) {
     int r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"b"(a),"c"(b),"d"(c)); return r;
 }
 
-#define SYS_EXIT          1
-#define SYS_WRITE         4
-#define SYS_GETARGC       260
-#define SYS_GETARGV       261
-#define SYS_NET_POLL      406
-#define SYS_NET_PING      410
-#define SYS_NET_PING_WAIT 411
+#define SYS_EXIT           1
+#define SYS_WRITE          4
+#define SYS_GETARGC        260
+#define SYS_GETARGV        261
+#define SYS_NET_POLL       406
+#define SYS_NET_PING       410
+#define SYS_NET_PING_WAIT  411
+#define SYS_NET_DNS_LOOKUP 412
 
 static void print(const char* s) {
     int len = 0;
@@ -61,6 +65,15 @@ static unsigned int parse_uint(const char* s) {
     return n;
 }
 
+// Check if string is an IP address (contains only digits and dots)
+static int is_ip_address(const char* s) {
+    while (*s) {
+        if (!((*s >= '0' && *s <= '9') || *s == '.')) return 0;
+        s++;
+    }
+    return 1;
+}
+
 void _start(void) {
     char arg1[64], arg2[64], arg3[64];
     arg1[0] = arg2[0] = arg3[0] = 0;
@@ -71,11 +84,31 @@ void _start(void) {
     if (argc >= 4) syscall3(SYS_GETARGV, 3, (int)arg3, 64);
 
     if (argc < 2 || arg1[0] == 0) {
-        print("Usage: ping <ip> [port] [count]\n");
+        print("Usage: ping <hostname|ip> [port] [count]\n");
         syscall1(SYS_EXIT, 1);
     }
 
-    uint32_t ip    = parse_ip(arg1);
+    uint32_t ip = 0;
+    
+    // Check if arg1 is an IP address or hostname
+    if (is_ip_address(arg1)) {
+        ip = parse_ip(arg1);
+    } else {
+        // It's a hostname - do DNS lookup
+        print("Resolving ");
+        print(arg1);
+        print("...\n");
+        
+        if (syscall2(SYS_NET_DNS_LOOKUP, (int)arg1, (int)&ip) < 0) {
+            print("DNS lookup failed\n");
+            syscall1(SYS_EXIT, 1);
+        }
+        
+        print("Resolved to ");
+        print_ip(ip);
+        print("\n");
+    }
+    
     // arg2 is port — ICMP doesn't use it, just acknowledged
     int count = 4; // default
     if (argc >= 4 && arg3[0] != 0)
