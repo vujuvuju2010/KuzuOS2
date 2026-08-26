@@ -12,4 +12,7 @@ void keyboard_handler();
 void keyboard_poll();
 char keyboard_get_char();
 
+extern volatile int ctrl_z_pressed;
+void poll_input_devices(void);
+
 #endif 

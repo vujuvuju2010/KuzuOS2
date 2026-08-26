@@ -2,6 +2,8 @@
 #include "vga.h"
 #include "syscall.h"
 #include "z_utils.h"
+#include "keyboard.h"
+#include "irq.h"
 
 #define IDT_ENTRIES   256
 #define PIC1_COMMAND  0x20
@@ -221,6 +223,9 @@ void isr_handler(struct regs* r)
         );
 
         r->rax = (uint64_t)result;  // return value in rax
+
+        // Ctrl+Z may have been pressed during syscall handling (e.g. httpd net poll)
+        process_handle_ctrl_z(r);
         return;
     }
 

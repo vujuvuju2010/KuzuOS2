@@ -13,6 +13,9 @@ static int altgr = 0;
 static int caps_lock = 0;
 static int e0_prefix = 0;
 
+// Flag for Ctrl+Z - checked in timer interrupt
+volatile int ctrl_z_pressed = 0;
+
 /* PS/2 scancode set 1 -> Linux keycode table */
 static const uint8_t set1_keycode[128] = {
       0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
@@ -99,8 +102,14 @@ void keyboard_init() {
 
     uint8_t mask;
     __asm__ volatile("inb $0x21, %0" : "=a"(mask));
-    mask |= 0x02;
+    mask &= ~0x02;  // unmask IRQ 1 (keyboard)
     __asm__ volatile("outb %0, $0x21" : : "a"(mask));
+}
+
+void poll_input_devices(void) {
+    keyboard_poll();
+    extern void usb_poll(void);
+    usb_poll();
 }
 
 void keyboard_handler() {
@@ -150,16 +159,11 @@ void keyboard_poll() {
     if (release)
         return;
 
-    // Debug: print keycode and ctrl state
-    if (ctrl) {
-        extern void z_printf(const char* fmt, ...);
-        z_printf("[KEY] ctrl=1, keycode=%d\n", keycode);
-    }
-
-    // Handle Ctrl+Z (stop process) - push special marker character
+    // Handle Ctrl+Z (stop process) - SET FLAG, handle in timer interrupt
     // Keycode 44 = Z key
     if (ctrl && keycode == 44) {
-        push_char(26);  // ASCII SUB (Ctrl+Z marker)
+        extern volatile int ctrl_z_pressed;
+        ctrl_z_pressed = 1;
         return;
     }
     

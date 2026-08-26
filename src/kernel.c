@@ -136,6 +136,8 @@ void delay(int ms) {
 void kernel_main(uint32_t mb_magic, uint32_t mb_addr) {
     gdt_init();
     interrupts_init();
+    irq_init();
+    keyboard_init();
     fpu_init();
     vga_init(mb_magic, mb_addr);
     clear_screen();

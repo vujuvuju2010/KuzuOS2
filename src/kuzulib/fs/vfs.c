@@ -128,6 +128,7 @@ static int console_read(void *buf, uint32_t len){
                 for(volatile int d = 0; d < 1000; d++);
             }
         }
+        
         /* backspace handling */
         if(c == '\b' || c == 127){
             if(i > 0){

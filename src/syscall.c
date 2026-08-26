@@ -12,6 +12,7 @@
 #include "lsusb.h"
 #include "usb.h"
 #include "xchi.h"
+#include "keyboard.h"
 #ifndef NULL
 #define NULL ((void*)0)
 #endif
@@ -409,6 +410,7 @@ case SYS_LSUSB: {
             return tcp_is_connected((int)arg1);
         }
         case SYS_NET_POLL: {
+            poll_input_devices();
             net_poll();
             return 0;
         }

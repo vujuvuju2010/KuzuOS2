@@ -267,8 +267,8 @@ void usbkbd_poll(void)
     
     // USB HID: 0x1D = Z key, 0x06 = C key
     if (ctrl && key == 0x1D) {  // Ctrl+Z
-        extern void process_stop_current(void);
-        process_stop_current();
+        extern volatile int ctrl_z_pressed;
+        ctrl_z_pressed = 1;
         return;
     }
     
@@ -330,8 +330,8 @@ void usbkbd_poll_device(usb_device_t* dev)
     
     // USB HID: 0x1D = Z key, 0x06 = C key
     if (ctrl && key == 0x1D) {  // Ctrl+Z
-        extern void process_stop_current(void);
-        process_stop_current();
+        extern volatile int ctrl_z_pressed;
+        ctrl_z_pressed = 1;
         return;
     }
     

@@ -210,6 +210,19 @@ void process_schedule() {
         return;
     }
     
+    // If current process is STOPPED, immediately switch to shell
+    if (current_process->state == PROCESS_STOPPED) {
+        if (shell_process && shell_process->state == PROCESS_READY) {
+            context_switch(current_process, shell_process);
+            return;
+        }
+    }
+    
+    // If current process is still RUNNING, mark it as READY for round-robin
+    if (current_process->state == PROCESS_RUNNING) {
+        current_process->state = PROCESS_READY;
+    }
+    
     // Find next ready process
     struct process* next = current_process->next;
     if (!next) {
@@ -221,7 +234,11 @@ void process_schedule() {
     while (next != current_process) {
         if (next && next->state == PROCESS_READY) {
             // Switch to this process
-            context_switch(current_process, next);
+            next->state = PROCESS_RUNNING;
+            struct process* from = current_process;
+            current_process = next;
+            context_save(&from->context);
+            context_restore(&next->context);
             return;
         }
         next = next->next;
@@ -233,7 +250,10 @@ void process_schedule() {
         }
     }
     
-    // No other ready processes, stay with current
+    // No other ready processes, stay with current if it's ready
+    if (current_process->state == PROCESS_READY) {
+        current_process->state = PROCESS_RUNNING;
+    }
 }
 
 // Yield CPU to next process
@@ -410,10 +430,16 @@ void process_switch_to_shell() {
 
 // Stop current process (for Ctrl+Z)
 void process_stop_current() {
-    if (!current_process || current_process == shell_process) {
-        return;  // Can't stop shell
+    if (!current_process) {
+        return;
     }
     
+    // Can't stop shell or init
+    if (current_process == shell_process || current_process == init_process) {
+        return;
+    }
+    
+    // Stop the current process
     print_color("\n[Process ", VGA_COLOR_LIGHT_GREY);
     char buf[16];
     int pos = 0;
@@ -433,11 +459,15 @@ void process_stop_current() {
     print(buf);
     print(" stopped]\n");
     
-    // Mark as stopped
+    // Mark as stopped and ready to switch
     current_process->state = PROCESS_STOPPED;
     
-    // Switch to shell
-    process_switch_to_shell();
+    // Mark shell as ready to run
+    if (shell_process && shell_process->state != PROCESS_TERMINATED) {
+        shell_process->state = PROCESS_READY;
+    }
+    
+    // The actual context switch will happen in the next scheduler call
 }
 
 // Continue a stopped process by PID
