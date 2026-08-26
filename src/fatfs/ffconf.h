@@ -31,7 +31,7 @@
 #define FF_SFN_BUF        12
 
 #define FF_FS_RPATH       0
-#define FF_VOLUMES        1
+#define FF_VOLUMES        2
 #define FF_STR_VOLUME_ID  0
 #define FF_VOLUME_STRS    "RAM","NAND","CF","SD1","SD2","USB1","USB2","USB3"
 #define FF_MULTI_PARTITION 0

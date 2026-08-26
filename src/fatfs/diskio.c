@@ -9,6 +9,7 @@ credist to the writers of ff.c and ffconf.c
 #include "../usb.h"
 #include "../vga.h"
 #include "../z_utils.h"
+#include "../xchi.h"
 
 
 // we assume these exist in your MSC code:
@@ -21,11 +22,21 @@ int msc_send_cum(usb_device_t* dev, unsigned char* cb, unsigned char cb_len,
 // ---- small helpers --------------------------------------------------
 
 extern usb_device_t usb_devices[MAX_USB_DEVICES];
+extern xchi_device_t xchi_devices[MAX_XCHI_DEVICES];
 
+// Check for USB 3.0 (xHCI) mass storage device first
+static xchi_device_t* get_xhci_msc_dev(void) {
+    for (int i = 0; i < MAX_XCHI_DEVICES; i++) {
+        if (xchi_devices[i].used && xchi_devices[i].is_msc) {
+            return &xchi_devices[i];
+        }
+    }
+    return 0;
+}
+
+// Check for USB 2.0 (EHCI) mass storage device
 static usb_device_t* get_msc_dev(void) {
     for (int i = 0; i < MAX_USB_DEVICES; i++) {
-        z_printf("  usb_devices[%d]: used=%d connected=%d driver=%d\n",
-            i, usb_devices[i].used, usb_devices[i].connected, usb_devices[i].driver);
         if (usb_devices[i].used &&
             usb_devices[i].connected &&
             usb_devices[i].driver == USB_DRIVER_MSC)
@@ -106,15 +117,32 @@ DSTATUS disk_status(BYTE pdrv)
 
 DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count)
 {
-    z_printf("disk_read: pdrv=%d sector=%u count=%u\n", pdrv, (unsigned)sector, (unsigned)count);
-    // pdrv 0 = USB, others = your ATA or whatever
-    if (pdrv == 0) {
+    // pdrv 0 and 1 = USB, others = your ATA or whatever
+    if (pdrv == 0 || pdrv == 1) {
+        // Try USB 3.0 (xHCI) first
+        xchi_device_t* xdev = get_xhci_msc_dev();
+        if (xdev) {
+            BYTE* dma_buf = (BYTE*)dma_alloc(512);
+            if (!dma_buf) return RES_ERROR;
+            
+            for (UINT i = 0; i < count; i++) {
+                int r = msc_read_sector_xchi((struct xchi_device_t*)xdev, (unsigned int)(sector + i), dma_buf);
+                if (r != 0)
+                    return RES_ERROR;
+                // copy from DMA buffer to FatFS buffer
+                for (int j = 0; j < 512; j++)
+                    buff[i * 512 + j] = dma_buf[j];
+            }
+            
+            return RES_OK;
+        }
+        
+        // Fall back to USB 2.0 (EHCI)
         usb_device_t* dev = get_msc_dev();
         if (!dev) {
-            z_printf("disk_read: no MSC device found!\n");
             return RES_NOTRDY;
         }
-
+        
         // make sure we know capacity / sector size
         ensure_msc_capacity(dev);
 
@@ -123,16 +151,8 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count)
         
         for (UINT i = 0; i < count; i++) {
             int r = msc_read_sector(dev, (unsigned int)(sector + i), dma_buf);
-            z_printf("disk_read: msc_read_sector lba=%u ret=%d dma_buf=%x\n", (unsigned)(sector+i), r, (unsigned)dma_buf);
             if (r != 0)
                 return RES_ERROR;
-            // dump first 16 bytes of sector 0 for debug
-            if (sector + i == 0) {
-                z_printf("sector0: ");
-                for (int d = 0; d < 16; d++) z_printf("%x ", dma_buf[d]);
-                z_printf("\n");
-                z_printf("sig: %x %x\n", dma_buf[510], dma_buf[511]);
-            }
             // copy from DMA buffer to FatFS buffer
             for (int j = 0; j < 512; j++)
                 buff[i * 512 + j] = dma_buf[j];
@@ -152,10 +172,27 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count)
 
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count)
 {
-    if (pdrv == 0) {
+    if (pdrv == 0 || pdrv == 1) {
+        // Try USB 3.0 (xHCI) first
+        xchi_device_t* xdev = get_xhci_msc_dev();
+        if (xdev) {
+            // Use a DMA-safe bounce buffer
+            BYTE* dma_buf = get_sector_buf();
+
+            for (UINT i = 0; i < count; i++) {
+                // copy from FatFS buffer into DMA buffer
+                for (int j = 0; j < 512; j++)
+                    dma_buf[j] = buff[i * 512 + j];
+                if (msc_write_sector_xchi((struct xchi_device_t*)xdev, (unsigned int)(sector + i), dma_buf) != 0)
+                    return RES_ERROR;
+            }
+            return RES_OK;
+        }
+        
+        // Fall back to USB 2.0 (EHCI)
         usb_device_t* dev = get_msc_dev();
         if (!dev) return RES_NOTRDY;
-
+        
         ensure_msc_capacity(dev);
 
         // Use a DMA-safe bounce buffer
@@ -182,7 +219,38 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count)
 
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void* buff)
 {
-    if (pdrv == 0) { // USB MSC
+    if (pdrv == 0 || pdrv == 1) { // USB MSC
+        // Try USB 3.0 (xHCI) first
+        xchi_device_t* xdev = get_xhci_msc_dev();
+        if (xdev) {
+            switch (cmd) {
+            case CTRL_SYNC:
+                // everything is synchronous already
+                return RES_OK;
+
+            case GET_SECTOR_COUNT:
+                if (!buff) return RES_PARERR;
+                // For USB 3.0, we don't store capacity in the device yet
+                // Return a large default value (adjust if needed)
+                *(DWORD*)buff = 0xFFFFFFFF;  // unknown size
+                return RES_OK;
+
+            case GET_SECTOR_SIZE:
+                if (!buff) return RES_PARERR;
+                *(WORD*)buff = 512;  // standard sector size
+                return RES_OK;
+
+            case GET_BLOCK_SIZE:
+                if (!buff) return RES_PARERR;
+                *(DWORD*)buff = 1; // minimal erase block size in sectors
+                return RES_OK;
+
+            default:
+                return RES_PARERR;
+            }
+        }
+        
+        // Fall back to USB 2.0 (EHCI)
         usb_device_t* dev = get_msc_dev();
         if (!dev) return RES_NOTRDY;
 

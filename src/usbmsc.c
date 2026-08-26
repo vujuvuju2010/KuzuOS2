@@ -47,7 +47,7 @@ static int ehci_bulk(unsigned int addr, unsigned int ep, void* buf, unsigned int
     // funfact: i got the admin acc for 52 ;)
    async_head->next = (unsigned int)qh | 0x02;  // link QH into async list
 
-int timeout = 8000000; // Conservative timeout for USB 2.0 stability
+int timeout = 8000000; // Increased timeout for USB 2.0 write operations
 while ((qtd->token & QTD_ACTIVE) && --timeout) {
     // Tiny delay every 128 iterations
     if((timeout & 0x7F) == 0) {
@@ -64,7 +64,8 @@ for (volatile int w = 0; w < 1000; w++);
 
 if (timeout == 0) {
     print_color("msc bulk shat itself :( \n", VGA_COLOR_RED);
-    z_printf("ehci_bulk timeout: addr=%d ep=%d len=%u is_in=%d\n", addr, ep, len, is_in);
+    z_printf("ehci_bulk timeout: addr=%d ep=%d len=%u is_in=%d token=0x%x\n", 
+             addr, ep, len, is_in, qtd->token);
     return -1;
 }
 if (qtd->token & (1 << 7)) { // halted
@@ -215,6 +216,7 @@ void usbmsc_attach(usb_device_t* dev){
             print_color("drive never became ready :(\n", VGA_COLOR_RED);
             return;
         }
+        // Mount to drive "0:" to match USB 3.0
         FRESULT res = f_mount(&usb_fs, "0:", 1);
         if(res != FR_OK)
             z_printf("fat32 sharted itself %d\n", res);

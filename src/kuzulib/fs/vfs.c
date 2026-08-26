@@ -236,6 +236,14 @@ static int ramfs_stat(struct mount_entry *mnt, const char *path,
     extern int ramfs_exists(const char *path);
     extern ramfs_entry_t* ramfs_get_entry(const char *path);
     
+    // Check virtual directories first
+    extern virtual_mount_t* find_virtual_mount(const char *path);
+    virtual_mount_t *vmount = find_virtual_mount(path);
+    if (vmount && vmount->stat_virtual) {
+        int result = vmount->stat_virtual(path, size_out, is_dir_out);
+        if (result == 0) return 0;
+    }
+    
     // Check in-memory ramfs first
     if (ramfs_exists(path)) {
         ramfs_entry_t *entry = ramfs_get_entry(path);
@@ -292,6 +300,8 @@ static int fat32_open(struct vfs_node *node, const char *path, int flags){
             return -1;
         }
     } else {
+        // Skip leading slash for non-root paths
+        if (*rel == '/') rel++;
         while(*rel && i < VFS_PATH_MAX + 2) fatpath[i++] = *rel++;
         fatpath[i] = '\0';
     }
@@ -373,11 +383,13 @@ static int fat32_readdir(struct vfs_node *node, uint32_t index,
     const char *rel = relative_path((mount_entry_t *)mnt, node->path);
 
     char fatpath[VFS_PATH_MAX + 3];
-    fatpath[0] = '1'; fatpath[1] = ':';
+    fatpath[0] = '0'; fatpath[1] = ':';
     int i = 2;
     if(rel[0] == '/' && rel[1] == '\0'){
-        fatpath[2] = '\0'; // must be 1:  
+        fatpath[2] = '\0'; // must be 0: for root
     } else {
+        // Skip leading slash if present
+        if (*rel == '/') rel++;
         while(*rel && i < VFS_PATH_MAX + 2) fatpath[i++] = *rel++;
         fatpath[i] = '\0';
     }
@@ -438,6 +450,8 @@ static int fat32_stat(struct mount_entry *mnt, const char *path,
         return 0;
     }
     
+    // Skip leading slash for non-root paths
+    if (*rel == '/') rel++;
     while(*rel && i < VFS_PATH_MAX + 2) fatpath[i++] = *rel++;
     fatpath[i] = '\0';
     
@@ -701,11 +715,95 @@ int sys_stat(const char *path, uint32_t *size_out, int *is_dir_out){
 
 int vfs_mkdir(const char *path) {
     extern void print(const char *);
+    extern char kernel_cwd[256];
+    
     print("[vfs_mkdir] called for ");
     print(path);
     print("\n");
     
-    /* Use in-memory ramfs instead of disk */
+    // Resolve relative paths
+    char resolved[VFS_PATH_MAX];
+    if (path[0] != '/') {
+        int i = 0;
+        while (kernel_cwd[i] && i < VFS_PATH_MAX - 1) {
+            resolved[i] = kernel_cwd[i];
+            i++;
+        }
+        if (i > 1 && resolved[i-1] != '/') resolved[i++] = '/';
+        int j = 0;
+        while (path[j] && i < VFS_PATH_MAX - 1) {
+            resolved[i++] = path[j++];
+        }
+        resolved[i] = '\0';
+        path = resolved;
+        
+        print("[vfs_mkdir] resolved to: ");
+        print(path);
+        print("\n");
+    }
+    
+    // Find which filesystem this path belongs to
+    mount_entry_t *mnt = find_mount(path);
+    if (!mnt) {
+        print("[vfs_mkdir] no mount found for path\n");
+        return -1;
+    }
+    
+    // Check if this is FAT32 filesystem
+    if (mnt->driver == &fat32_driver) {
+        print("[vfs_mkdir] using FAT32 backend\n");
+        
+        // Convert VFS path to FAT32 path
+        const char *rel = relative_path(mnt, path);
+        char fatpath[VFS_PATH_MAX + 3];
+        fatpath[0] = '0';
+        fatpath[1] = ':';
+        int i = 2;
+        
+        // Can't create root directory
+        if (rel[0] == '/' && rel[1] == '\0') {
+            print("[vfs_mkdir] cannot create root directory\n");
+            return -1;
+        }
+        
+        while(*rel && i < VFS_PATH_MAX + 2) {
+            fatpath[i++] = *rel++;
+        }
+        fatpath[i] = '\0';
+        
+        print("[vfs_mkdir] FAT32 path: ");
+        print(fatpath);
+        print("\n");
+        
+        // Create directory using FatFS
+        FRESULT res = f_mkdir(fatpath);
+        if (res != FR_OK) {
+            print("[vfs_mkdir] f_mkdir failed code=");
+            char buf[8];
+            int p = 0;
+            int r = (int)res;
+            if (r == 0) buf[p++] = '0';
+            else {
+                char tmp[8];
+                int t = 0;
+                while (r > 0) {
+                    tmp[t++] = '0' + (r % 10);
+                    r /= 10;
+                }
+                while (t-- > 0) buf[p++] = tmp[t];
+            }
+            buf[p] = 0;
+            print(buf);
+            print("\n");
+            return -1;
+        }
+        
+        print("[vfs_mkdir] f_mkdir OK\n");
+        return 0;
+    }
+    
+    // Use in-memory ramfs for other filesystems
+    print("[vfs_mkdir] using RAMFS backend\n");
     extern int ramfs_create_directory(const char *path);
     int result = ramfs_create_directory(path);
     
@@ -720,7 +818,92 @@ int vfs_mkdir(const char *path) {
 /* ── vfs_create ──────────────────────────────────────────────── */
 
 int vfs_create(const char *path) {
-    /* Use in-memory ramfs instead of disk */
+    extern void print(const char *);
+    extern char kernel_cwd[256];
+    
+    print("[vfs_create] called for ");
+    print(path);
+    print("\n");
+    
+    // Resolve relative paths
+    char resolved[VFS_PATH_MAX];
+    if (path[0] != '/') {
+        int i = 0;
+        while (kernel_cwd[i] && i < VFS_PATH_MAX - 1) {
+            resolved[i] = kernel_cwd[i];
+            i++;
+        }
+        if (i > 1 && resolved[i-1] != '/') resolved[i++] = '/';
+        int j = 0;
+        while (path[j] && i < VFS_PATH_MAX - 1) {
+            resolved[i++] = path[j++];
+        }
+        resolved[i] = '\0';
+        path = resolved;
+        
+        print("[vfs_create] resolved to: ");
+        print(path);
+        print("\n");
+    }
+    
+    // Find which filesystem this path belongs to
+    mount_entry_t *mnt = find_mount(path);
+    if (!mnt) {
+        print("[vfs_create] no mount found for path\n");
+        return -1;
+    }
+    
+    // Check if this is FAT32 filesystem
+    if (mnt->driver == &fat32_driver) {
+        print("[vfs_create] using FAT32 backend\n");
+        
+        // Convert VFS path to FAT32 path
+        const char *rel = relative_path(mnt, path);
+        char fatpath[VFS_PATH_MAX + 3];
+        fatpath[0] = '0';
+        fatpath[1] = ':';
+        int i = 2;
+        
+        while(*rel && i < VFS_PATH_MAX + 2) {
+            fatpath[i++] = *rel++;
+        }
+        fatpath[i] = '\0';
+        
+        print("[vfs_create] FAT32 path: ");
+        print(fatpath);
+        print("\n");
+        
+        // Create empty file using FatFS
+        FIL fp;
+        FRESULT res = f_open(&fp, fatpath, FA_CREATE_NEW | FA_WRITE);
+        if (res != FR_OK) {
+            print("[vfs_create] f_open failed code=");
+            char buf[8];
+            int p = 0;
+            int r = (int)res;
+            if (r == 0) buf[p++] = '0';
+            else {
+                char tmp[8];
+                int t = 0;
+                while (r > 0) {
+                    tmp[t++] = '0' + (r % 10);
+                    r /= 10;
+                }
+                while (t-- > 0) buf[p++] = tmp[t];
+            }
+            buf[p] = 0;
+            print(buf);
+            print("\n");
+            return -1;
+        }
+        
+        f_close(&fp);
+        print("[vfs_create] file created OK\n");
+        return 0;
+    }
+    
+    // Use in-memory ramfs for other filesystems
+    print("[vfs_create] using RAMFS backend\n");
     extern int ramfs_create_file(const char *path);
     return ramfs_create_file(path);
 }

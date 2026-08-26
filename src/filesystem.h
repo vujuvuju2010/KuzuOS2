@@ -65,7 +65,22 @@ void ramdisk_preload_from_usb(struct usb_device* usb_dev, uint32_t start_lba, ui
 int fs_readdir_index(char *dir_path, uint32_t idx,
                      char *name_out, int *is_dir_out);
 
-
-
 void fs_create_directory_raw(const char *path);
-                     #endif
+
+// Virtual mount structure (needed by VFS)
+typedef struct virtual_mount_s {
+    char name[64];
+    int (*is_virtual_dir)(const char *path);
+    int (*list_virtual_dir)(const char *path, uint32_t index, char *name_out, int *is_dir_out);
+    int (*stat_virtual)(const char *path, uint32_t *size_out, int *is_dir_out);
+} virtual_mount_t;
+
+// Virtual mount functions
+virtual_mount_t* find_virtual_mount(const char *path);
+
+// RAMFS functions
+int ramfs_create_directory(const char *path);
+int ramfs_create_file(const char *path);
+int ramfs_exists(const char *path);
+
+#endif

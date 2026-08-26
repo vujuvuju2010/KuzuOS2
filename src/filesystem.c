@@ -9,6 +9,18 @@
 #include "kuzulib/fs/vfs.h"
 #include "usb.h"
 #include "z_utils.h" // NEEDED FOR GODDAMN PRINTF 
+// Helper functions - must be declared early
+static int strlen_local(const char* s) { int n = 0; while (s && s[n]) n++; return n; }
+static int strncmp_local(const char* a, const char* b, int n) { for (int i=0;i<n;i++){ unsigned char x=a[i], y=b[i]; if (x!=y) return x-y; if (x==0||y==0) return 0;} return 0; }
+static int strcmp_local(const char* a, const char* b) {
+    while (*a || *b) {
+        unsigned char x = *a, y = *b;
+        if (x != y) return x - y;
+        a++; b++;
+    }
+    return 0;
+}
+
 // In-memory ramfs entries (for mkdir/touch)
 #define MAX_RAMFS_ENTRIES 256
 
@@ -24,6 +36,132 @@ typedef struct {
 static ramfs_entry_t ramfs_entries[MAX_RAMFS_ENTRIES];
 static int ramfs_initialized = 0;
 
+// Virtual directory structure for USB and other special filesystems
+typedef struct virtual_mount_s {
+    char name[64];  // Directory name like "usb"
+    int (*is_virtual_dir)(const char *path);
+    int (*list_virtual_dir)(const char *path, uint32_t index, char *name_out, int *is_dir_out);
+    int (*stat_virtual)(const char *path, uint32_t *size_out, int *is_dir_out);
+} virtual_mount_t;
+
+// Forward declarations for virtual directory handlers
+static int is_usb_virtual_dir(const char *path);
+static int list_usb_dir(const char *path, uint32_t index, char *name_out, int *is_dir_out);
+static int stat_usb_virtual(const char *path, uint32_t *size_out, int *is_dir_out);
+int ramfs_create_directory(const char *path);
+
+// Virtual mount table
+static virtual_mount_t virtual_mounts[] = {
+    {"usb", is_usb_virtual_dir, list_usb_dir, stat_usb_virtual},
+    {"", 0, 0, 0}  // Terminator
+};
+
+// USB virtual directory implementation
+static int is_usb_virtual_dir(const char *path) {
+    // Check if path is /usb or /usb/something
+    if (strcmp_local(path, "/usb") == 0) return 1;
+    if (strncmp_local(path, "/usb/", 5) == 0) return 1;
+    return 0;
+}
+
+static int list_usb_dir(const char *path, uint32_t index, char *name_out, int *is_dir_out) {
+    extern usb_device_t usb_devices[MAX_USB_DEVICES];
+    extern xchi_device_t xchi_devices[MAX_XCHI_DEVICES];
+    
+    // List USB devices
+    if (strcmp_local(path, "/usb") == 0) {
+        uint32_t count = 0;
+        
+        // First list USB 2.0 devices
+        for (int i = 0; i < MAX_USB_DEVICES; i++) {
+            if (usb_devices[i].used && usb_devices[i].connected) {
+                if (count == index) {
+                    // Format: usb2_<slot>_<vendor>_<product>
+                    name_out[0] = 'u'; name_out[1] = 's'; name_out[2] = 'b';
+                    name_out[3] = '2'; name_out[4] = '_';
+                    int pos = 5;
+                    
+                    // Add slot number
+                    if (i < 10) {
+                        name_out[pos++] = '0' + i;
+                    } else {
+                        name_out[pos++] = '0' + (i / 10);
+                        name_out[pos++] = '0' + (i % 10);
+                    }
+                    name_out[pos] = '\0';
+                    
+                    *is_dir_out = (usb_devices[i].driver == 2) ? 1 : 0; // MSC = directory
+                    return 1;
+                }
+                count++;
+            }
+        }
+        
+        // Then list USB 3.0 devices
+        for (int i = 0; i < MAX_XCHI_DEVICES; i++) {
+            if (xchi_devices[i].used) {
+                if (count == index) {
+                    // Format: usb3_<slot>
+                    name_out[0] = 'u'; name_out[1] = 's'; name_out[2] = 'b';
+                    name_out[3] = '3'; name_out[4] = '_';
+                    int pos = 5;
+                    
+                    // Add slot number
+                    if (i < 10) {
+                        name_out[pos++] = '0' + i;
+                    } else {
+                        name_out[pos++] = '0' + (i / 10);
+                        name_out[pos++] = '0' + (i % 10);
+                    }
+                    name_out[pos] = '\0';
+                    
+                    *is_dir_out = xchi_devices[i].is_msc ? 1 : 0; // MSC = directory
+                    return 1;
+                }
+                count++;
+            }
+        }
+        return 0;
+    }
+    
+    // If path is /usb/<device>, list files on that device
+    // TODO: Implement device-specific file listing
+    return 0;
+}
+
+static int stat_usb_virtual(const char *path, uint32_t *size_out, int *is_dir_out) {
+    if (strcmp_local(path, "/usb") == 0) {
+        *is_dir_out = 1;
+        *size_out = 0;
+        return 0;
+    }
+    
+    // Check if it's a specific USB device path
+    if (strncmp_local(path, "/usb/", 5) == 0) {
+        // For now, treat all /usb/<device> as directories
+        *is_dir_out = 1;
+        *size_out = 0;
+        return 0;
+    }
+    
+    return -1;
+}
+
+// Check if a path is a virtual directory
+virtual_mount_t* find_virtual_mount(const char *path) {
+    for (int i = 0; virtual_mounts[i].name[0] != '\0'; i++) {
+        int name_len = strlen_local(virtual_mounts[i].name);
+        if (path[0] == '/' && strncmp_local(path + 1, virtual_mounts[i].name, name_len) == 0) {
+            // Check if it's exactly the mount point or a subpath
+            char next = path[1 + name_len];
+            if (next == '\0' || next == '/') {
+                return &virtual_mounts[i];
+            }
+        }
+    }
+    return 0;
+}
+
 static void ramfs_init(void) {
     if (ramfs_initialized) return;
     for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
@@ -32,6 +170,9 @@ static void ramfs_init(void) {
         ramfs_entries[i].size = 0;
     }
     ramfs_initialized = 1;
+    
+    // Create virtual mount points as ramfs directories
+    ramfs_create_directory("/usb");
 }
 
 int ramfs_create_directory(const char *path) {
@@ -150,6 +291,13 @@ int ramfs_create_file(const char *path) {
 
 int ramfs_exists(const char *path) {
     ramfs_init();
+    
+    // Check virtual directories first
+    virtual_mount_t *vmount = find_virtual_mount(path);
+    if (vmount && vmount->is_virtual_dir && vmount->is_virtual_dir(path)) {
+        return 1;
+    }
+    
     for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
         if (ramfs_entries[i].used && strcmp(ramfs_entries[i].path, path) == 0) {
             return 1;
@@ -160,6 +308,10 @@ int ramfs_exists(const char *path) {
 
 ramfs_entry_t* ramfs_get_entry(const char *path) {
     ramfs_init();
+    
+    // Virtual directories don't have ramfs entries
+    // Return NULL for them (handled separately in stat functions)
+    
     for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
         if (ramfs_entries[i].used && strcmp(ramfs_entries[i].path, path) == 0) {
             return &ramfs_entries[i];
@@ -187,6 +339,29 @@ int ramfs_get_entry_by_index(uint32_t index, char **name_out, int *is_dir_out) {
 // Get ramfs entry by index, but only for entries that are direct children of dir_path
 int ramfs_get_entry_by_index_in_dir(const char *dir_path, uint32_t index, char **name_out, int *is_dir_out) {
     ramfs_init();
+    
+    // Check if this is a virtual directory first
+    virtual_mount_t *vmount = find_virtual_mount(dir_path);
+    if (vmount && vmount->list_virtual_dir) {
+        char vname[256];
+        int result = vmount->list_virtual_dir(dir_path, index, vname, is_dir_out);
+        if (result > 0) {
+            // Copy to a static buffer since we need to return a pointer
+            static char virtual_name_buf[256];
+            int i = 0;
+            while (vname[i] && i < 255) {
+                virtual_name_buf[i] = vname[i];
+                i++;
+            }
+            virtual_name_buf[i] = '\0';
+            *name_out = virtual_name_buf;
+            return 0;
+        }
+        // If virtual listing returned nothing, don't fall through to ramfs
+        if (vmount->is_virtual_dir && vmount->is_virtual_dir(dir_path)) {
+            return -1;
+        }
+    }
     
     // Normalize dir_path
     int dir_len = 0;
@@ -299,9 +474,7 @@ static void ata_set_bus(uint16_t io_base, uint16_t ctrl_port) {
     ata_ctrl_port = ctrl_port;
 }
 
-// --- Helper Functions (defined before use) ---
-static int strlen_local(const char* s) { int n = 0; while (s && s[n]) n++; return n; }
-static int strncmp_local(const char* a, const char* b, int n) { for (int i=0;i<n;i++){ unsigned char x=a[i], y=b[i]; if (x!=y) return x-y; if (x==0||y==0) return 0;} return 0; }
+// --- Additional Helper Functions ---
 static int strncmp_case_insensitive(const char* a, const char* b, int n) { 
     for (int i=0;i<n;i++){
         unsigned char x=a[i], y=b[i];
@@ -326,15 +499,6 @@ static int strcmp_case_insensitive(const char* a, const char* b) {
 
 static char* strchr_local(const char* str, char c) { while (*str != '\0') { if (*str == c) return (char*)str; str++; } return 0; }
 
-// Local strcmp wrapper for const strings
-static int strcmp_local(const char* a, const char* b) {
-    while (*a || *b) {
-        unsigned char x = *a, y = *b;
-        if (x != y) return x - y;
-        a++; b++;
-    }
-    return 0;
-}
 static void* memset(void* dest, int c, uint32_t n) {
     uint8_t* d = (uint8_t*)dest;
     for (uint32_t i = 0; i < n; i++) d[i] = (uint8_t)c;
@@ -1417,9 +1581,8 @@ void fs_late_init() {
     // Fall back to USB 2.0 (EHCI)
     usb_device_t* usb_boot = find_usb_boot_device();
     if (usb_boot) {
-        print_color("USB 2.0 boot device detected!\n", VGA_COLOR_LIGHT_CYAN);
+        print_color("USB 2.0 device detected, checking for bootable ISO...\n", VGA_COLOR_LIGHT_CYAN);
         z_printf("USB2: vendor=0x%x product=0x%x\n", usb_boot->vendor_id, usb_boot->product_id);
-        print_color("USB 2.0 boot enabled - disk reads will use EHCI device\n", VGA_COLOR_LIGHT_GREEN);
         
         // Mark as USB boot BEFORE reading ISO
         boot_from_usb = 1;
@@ -1427,8 +1590,9 @@ void fs_late_init() {
         // Now try to detect ISO on USB
         print("Detecting ISO filesystem on USB 2.0...\n");
         uint32_t iso_blocks = 0;
-        if (iso_get_volume_size_blocks(&iso_blocks) == 0) {
+        if (iso_get_volume_size_blocks(&iso_blocks) == 0 && iso_blocks > 0) {
             print_color("ISO filesystem detected on USB 2.0!\n", VGA_COLOR_LIGHT_GREEN);
+            print_color("USB 2.0 boot enabled - disk reads will use EHCI device\n", VGA_COLOR_LIGHT_GREEN);
             char sbuf[16]; int pos = 0; uint32_t v = iso_blocks;
             if (v == 0) sbuf[pos++] = '0';
             else {
@@ -1462,17 +1626,17 @@ void fs_late_init() {
                 print("USB 2.0 filesystem test failed\n");
             } else {
                 print_color("USB 2.0 boot successful :)\n", VGA_COLOR_LIGHT_GREEN);
+                return; // Success - return here
             }
-        } else {
-            print_color("WARNING: No ISO detected on USB, trying raw filesystem\n", VGA_COLOR_YELLOW);
-            fs_ensure_header_initialized();
         }
         
-        return;
+        // No ISO on USB 2.0, reset flag and try CD-ROM
+        print_color("WARNING: No ISO detected on USB 2.0, trying CD-ROM...\n", VGA_COLOR_YELLOW);
+        boot_from_usb = 0; // Reset flag so CD-ROM can work
     }
     
-    // No USB, try CD/DVD
-    print("No USB boot device, trying CD/DVD...\n");
+    // USB 2.0 failed or not found, try CD-ROM
+    print("No USB boot device or USB boot failed, trying CD/DVD...\n");
     
     device_type = DEVICE_TYPE_ATAPI_CDROM;
     is_atapi_device = 1;
@@ -1754,6 +1918,15 @@ void fs_list_all() {
 }
 
 int fs_any_exists(char* path) {
+    // Check virtual directories first
+    virtual_mount_t *vmount = find_virtual_mount(path);
+    if (vmount && vmount->is_virtual_dir && vmount->is_virtual_dir(path)) {
+        return 1;
+    }
+    
+    // Check ramfs
+    if (ramfs_exists(path)) return 1;
+    
     // Check TinyFS
     struct fs_header header; if (fs_read_header(&header) == 0 && header.magic == FS_MAGIC) {
         for (int i=0;i<MAX_FILES;i++) if (header.files[i].used && strcmp(header.files[i].path, path) == 0) return 1;
@@ -1764,6 +1937,16 @@ int fs_any_exists(char* path) {
 }
 
 int fs_any_is_directory(char* path) {
+    // Check virtual directories first
+    virtual_mount_t *vmount = find_virtual_mount(path);
+    if (vmount && vmount->is_virtual_dir && vmount->is_virtual_dir(path)) {
+        return 1;
+    }
+    
+    // Check ramfs
+    ramfs_entry_t *ramfs_entry = ramfs_get_entry(path);
+    if (ramfs_entry) return ramfs_entry->is_directory;
+    
     struct fs_header header;
 
     if (fs_read_header(&header) == 0 && header.magic == FS_MAGIC) {
@@ -1928,6 +2111,18 @@ int fs_chdir(char *path)
 
 int fs_readdir_index(char *dir_path, uint32_t idx,
                      char *name_out, int *is_dir_out) {
+    // Check if this is a virtual directory first
+    virtual_mount_t *vmount = find_virtual_mount(dir_path);
+    if (vmount && vmount->list_virtual_dir) {
+        int result = vmount->list_virtual_dir(dir_path, idx, name_out, is_dir_out);
+        if (result > 0) return 1;
+        // If it's a virtual directory but returned nothing, don't fall through
+        if (vmount->is_virtual_dir && vmount->is_virtual_dir(dir_path)) {
+            return 0;
+        }
+    }
+    
+    // Try ISO filesystem
     iso_extent e; int isdir = 0;
     if (iso_lookup_path(dir_path, &e, &isdir) != 0 || !isdir) return -1;
     uint32_t count = 0;
