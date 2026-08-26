@@ -436,6 +436,14 @@ case SYS_LSUSB: {
             uint32_t* out_ip = (uint32_t*)arg2;
             return dns_lookup(hostname, out_ip);
         }
+        case SYS_NET_LISTEN: {
+            extern int tcp_listen(uint16_t port);
+            return tcp_listen((uint16_t)arg1);
+        }
+        case SYS_NET_ACCEPT: {
+            extern int tcp_accept(int listen_sock);
+            return tcp_accept((int)arg1);
+        }
 
         /* ── Unknown ─────────────────────────────────────────── */
         default: {

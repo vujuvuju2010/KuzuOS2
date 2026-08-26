@@ -50,7 +50,7 @@ int _start(void) {
     int fd = syscall2(SYS_OPEN, (int)filename, O_WRONLY | O_CREAT);
     
     if (fd < 0) {
-        print("touch: cannot touch '");
+        print("touch: i just touched '");
         print(filename);
         print("'\n");
         syscall1(SYS_EXIT, 1);

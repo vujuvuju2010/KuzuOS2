@@ -425,6 +425,8 @@ typedef struct {
 #define SYS_NET_PING       410 // ping
 #define SYS_NET_PING_WAIT  411 // HEYYY WWAITTTT I GOT A NEW COMPLAINNTTT
 #define SYS_NET_DNS_LOOKUP 412 // DNS hostname lookup
+#define SYS_NET_LISTEN     413 // TCP listen on port
+#define SYS_NET_ACCEPT     414 // TCP accept connection
 
 
 

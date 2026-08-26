@@ -192,6 +192,54 @@ int tcp_is_connected(int sock) {
     return sockets[sock].in_use && sockets[sock].state == TCP_ESTABLISHED;
 }
 
+// ---- Server API ----
+
+int tcp_listen(uint16_t port) {
+    int idx = alloc_socket();
+    if (idx < 0) return -1;
+
+    tcp_socket_t* s = &sockets[idx];
+    s->local_ip    = net_ip;
+    s->local_port  = port;
+    s->remote_ip   = 0;
+    s->remote_port = 0;
+    s->state       = TCP_LISTEN;
+    
+    return idx;
+}
+
+int tcp_accept(int listen_sock) {
+    if (listen_sock < 0 || listen_sock >= TCP_MAX_SOCKETS) return -1;
+    tcp_socket_t* ls = &sockets[listen_sock];
+    if (!ls->in_use || ls->state != TCP_LISTEN) return -1;
+
+    // Look for a socket that hasn't been accepted yet
+    for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+        if (sockets[i].in_use && 
+            sockets[i].local_port == ls->local_port &&
+            sockets[i].state == TCP_ESTABLISHED &&
+            !sockets[i].accepted) {
+            // Found a newly established connection - mark as accepted
+            sockets[i].accepted = 1;
+            return i;
+        }
+    }
+    
+    return -1; // no pending connections
+}
+
+// Helper to find a listening socket by port
+static tcp_socket_t* find_listener(uint16_t local_port) {
+    for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+        if (sockets[i].in_use && 
+            sockets[i].state == TCP_LISTEN &&
+            sockets[i].local_port == local_port) {
+            return &sockets[i];
+        }
+    }
+    return NULL;
+}
+
 // ---- receive / state machine ----
 void tcp_receive(ip_addr_t src_ip, ip_addr_t dst_ip,
                  uint8_t* data, uint16_t len) {
@@ -221,6 +269,36 @@ void tcp_receive(ip_addr_t src_ip, ip_addr_t dst_ip,
 
     tcp_socket_t* s = find_socket(src_ip, src_port, dst_port);
     if (!s) {
+        // Check if there's a listener on this port
+        if (flags & TCP_SYN) {
+            tcp_socket_t* listener = find_listener(dst_port);
+            if (listener) {
+                print_color("[tcp] Incoming SYN on listening port, creating new socket\n", VGA_COLOR_LIGHT_GREEN);
+                
+                // Allocate new socket for this connection
+                int new_idx = alloc_socket();
+                if (new_idx < 0) {
+                    print_color("[tcp] No sockets available\n", VGA_COLOR_LIGHT_RED);
+                    return;
+                }
+                
+                s = &sockets[new_idx];
+                s->local_ip    = listener->local_ip;
+                s->local_port  = listener->local_port;
+                s->remote_ip   = src_ip;
+                s->remote_port = src_port;
+                s->rcv_nxt     = seq + 1;
+                s->snd_nxt     = next_isn();
+                s->snd_una     = s->snd_nxt;
+                s->state       = TCP_SYN_RECEIVED;
+                s->accepted    = 0;
+                
+                // Send SYN+ACK
+                tcp_send_segment(s, TCP_SYN | TCP_ACK, NULL, 0);
+                return;
+            }
+        }
+        
         print_color("[tcp] no socket match\n", VGA_COLOR_LIGHT_RED);
         return;
     }
@@ -228,6 +306,20 @@ void tcp_receive(ip_addr_t src_ip, ip_addr_t dst_ip,
     print_color("[tcp] socket state seen\n", VGA_COLOR_LIGHT_BLUE);
 
     switch (s->state) {
+    case TCP_SYN_RECEIVED:
+        print_color("[tcp] in SYN_RECEIVED\n", VGA_COLOR_LIGHT_BLUE);
+        if (flags & TCP_ACK) {
+            print_color("[tcp] got ACK, -> ESTABLISHED\n", VGA_COLOR_LIGHT_GREEN);
+            s->snd_una = ack_num;
+            s->snd_wnd = ntohs(hdr->window);
+            s->state   = TCP_ESTABLISHED;
+        } else if (flags & TCP_RST) {
+            print_color("[tcp] got RST in SYN_RECEIVED, closing\n", VGA_COLOR_LIGHT_RED);
+            s->state  = TCP_CLOSED;
+            s->in_use = 0;
+        }
+        break;
+        
     case TCP_SYN_SENT:
         print_color("[tcp] in SYN_SENT\n", VGA_COLOR_LIGHT_BLUE);
         if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)) {

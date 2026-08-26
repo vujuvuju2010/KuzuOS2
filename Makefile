@@ -299,6 +299,12 @@ ping: ping.o
 ping.o: src/ping.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+httpd: httpd.o
+	$(LD) -m elf_x86_64 -s -Ttext=0x00400000 -o $@ $^
+
+httpd.o: src/httpd.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 vim: vim.o libkuzu.a
 	$(LD) -m elf_x86_64 -s -Ttext=0x00400000 -o $@ vim.o libkuzu.a
 
@@ -381,11 +387,12 @@ iso/boot/grub/grub.cfg:
 KBD_INC ?= /usr/share/kbd/keymaps/i386/include
 KBD_COMPOSE ?= /usr/share/kbd/keymaps/include
 
-kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping loadkeys hello.c banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map
-	mkdir -p iso/boot iso/dev iso/lib iso/dev/keys
+kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys hello.c index.html banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map
+	mkdir -p iso/boot iso/dev iso/lib iso/dev/keys iso/www
 	cp kernel.bin iso/boot/
-	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping loadkeys iso/dev/
+	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys iso/dev/
 	cp hello.c iso/dev/
+	cp index.html iso/www/
 	cp banner_frames/*.bin iso/dev/
 	cp keymaps/*.map iso/dev/keys/
 	cp keymaps/qwerty-layout iso/dev/keys/ 2>/dev/null || cp $(KBD_INC)/qwerty-layout.inc iso/dev/keys/qwerty-layout

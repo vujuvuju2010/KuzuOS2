@@ -71,17 +71,22 @@ typedef struct {
     uint16_t    send_len;
 
     uint8_t     in_use;
+    uint8_t     accepted;  // Set to 1 when accept() returns this socket
 } tcp_socket_t;
 
 // Called by ip_receive
 void tcp_receive(ip_addr_t src_ip, ip_addr_t dst_ip, uint8_t* data, uint16_t len);
 
-// Public API
+// Public API - Client
 int  tcp_connect(ip_addr_t dst_ip, uint16_t dst_port, uint16_t src_port);
 int  tcp_send(int sock, uint8_t* data, uint16_t len);
 int  tcp_recv(int sock, uint8_t* buf, uint16_t max_len);
 void tcp_close(int sock);
 int  tcp_is_connected(int sock);
+
+// Public API - Server
+int  tcp_listen(uint16_t port);
+int  tcp_accept(int listen_sock);
 
 // Checksum helper (uses pseudo-header)
 uint16_t tcp_checksum(ip_addr_t src, ip_addr_t dst,

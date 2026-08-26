@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>KuzuOS - Welcome</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0a0a0a;
+            color: #00ff00;
+            margin: 0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            border: 2px solid #00ff00;
+            background: #0d0d0d;
+        }
+        h1 {
+            color: #00ff00;
+            text-align: center;
+            font-size: 3em;
+            margin: 0;
+            text-shadow: 0 0 10px #00ff00;
+        }
+        h2 {
+            color: #00dd00;
+            border-bottom: 1px solid #00ff00;
+            padding-bottom: 10px;
+        }
+        .ascii-art {
+            text-align: center;
+            color: #00ff00;
+            font-size: 0.8em;
+            margin: 20px 0;
+        }
+        .info-box {
+            background: #0a0a0a;
+            border: 1px solid #00ff00;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .feature {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .feature::before {
+            content: ">";
+            color: #00ff00;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        a {
+            color: #00ffff;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .blink {
+            animation: blink 1s step-start infinite;
+        }
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="ascii-art">
+            <pre>
+    _  __                  ___  ____  
+   | |/ /   _ _____  _   / _ \/ ___| 
+   | ' / | | |_  / || | | | | \___ \ 
+   | . \ |_| |/ /| || | | |_| |___) |
+   |_|\_\__,_/___|\_,_|  \___/|____/ 
+            </pre>
+        </div>
+        
+        <h1>WELCOME TO KUZUOS<span class="blink">_</span></h1>
+        
+        <div class="info-box">
+            <h2>System Information</h2>
+            <div class="feature">OS: KuzuOS v2.0</div>
+            <div class="feature">Kernel: Custom x86_64</div>
+            <div class="feature">Web Server: httpd/1.0</div>
+            <div class="feature">Status: ONLINE</div>
+        </div>
+        
+        <div class="info-box">
+            <h2>Features</h2>
+            <div class="feature">Custom TCP/IP stack with DNS support</div>
+            <div class="feature">HTTP/1.1 with keep-alive connections</div>
+            <div class="feature">USB Mass Storage support</div>
+            <div class="feature">FAT32 filesystem</div>
+            <div class="feature">VGA text mode graphics</div>
+            <div class="feature">Network utilities (ping, DNS lookup)</div>
+            <div class="feature">Embedded TinyCC compiler</div>
+        </div>
+        
+        <div class="info-box">
+            <h2>Available Commands</h2>
+            <div class="feature">ping &lt;host&gt; - ICMP echo with DNS resolution</div>
+            <div class="feature">httpd - Start this web server</div>
+            <div class="feature">ls, cd, cat - File operations</div>
+            <div class="feature">tcc - C compiler</div>
+            <div class="feature">vim - Text editor</div>
+        </div>
+        
+        <div class="info-box">
+            <h2>About</h2>
+            <p>
+                KuzuOS is a hobby operating system written from scratch. 
+                You're viewing this page from a custom HTTP server running 
+                entirely in kernel space with a userspace web server.
+            </p>
+            <p>
+                This page is served from the <code>/www/</code> directory 
+                on a FAT32 filesystem mounted from USB storage.
+            </p>
+        </div>
+        
+        <div style="text-align: center; margin-top: 30px; color: #00dd00;">
+            <p>Built with ❤️ and assembly</p>
+            <p><small>Server time: [System clock not implemented yet]</small></p>
+        </div>
+    </div>
+</body>
+</html>
