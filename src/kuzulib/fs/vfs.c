@@ -678,7 +678,13 @@ int sys_read(int fd, void *buf, uint32_t len){
 
 int sys_write(int fd, const void *buf, uint32_t len){
     /* console stdout / stderr */
-    if(fd == 1 || fd == 2) return console_write(buf, len);
+    if(fd == 1 || fd == 2) {
+        extern int process_may_use_console(void);
+        if (!process_may_use_console()) {
+            return (int)len;
+        }
+        return console_write(buf, len);
+    }
 
     vfs_node_t **fds = get_fds();
     if(!fds) return -1;

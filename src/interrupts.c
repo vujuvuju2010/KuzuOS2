@@ -4,6 +4,7 @@
 #include "z_utils.h"
 #include "keyboard.h"
 #include "irq.h"
+#include "process.h"
 
 #define IDT_ENTRIES   256
 #define PIC1_COMMAND  0x20
@@ -226,6 +227,9 @@ void isr_handler(struct regs* r)
 
         // Ctrl+Z may have been pressed during syscall handling (e.g. httpd net poll)
         process_handle_ctrl_z(r);
+
+        // When a background timeslice expires, return to the waiting shell.
+        process_end_background_slice(r);
         return;
     }
 

@@ -26,14 +26,11 @@ context_save:
     
     mov [rdi + 72], rsi   ; ctx->rsi
     mov [rdi + 80], rbp   ; ctx->rbp
-    mov [rdi + 88], rsp   ; ctx->rsp (will be adjusted)
+    mov [rdi + 88], rsp   ; ctx->rsp -> return-address slot on stack
     mov [rdi + 96], rbx   ; ctx->rbx
     mov [rdi + 104], rdx  ; ctx->rdx
     mov [rdi + 112], rcx  ; ctx->rcx
     mov [rdi + 120], rax  ; ctx->rax (using rax as temp)
-    
-    ; Adjust RSP to point to return address (skip our return address)
-    add qword [rdi + 88], 8  ; rsp += 8 to skip return address
     
     ; Save segment registers (zero-extend to 64-bit)
     mov rax, ds
@@ -55,10 +52,12 @@ context_save:
     pop rax
     mov [rdi + 176], rax  ; ctx->rflags
     
-    ; CS and SS - store 0 for kernel mode
-    mov qword [rdi + 168], 0   ; ctx->cs (kernel mode)
-    mov qword [rdi + 184], 0   ; ctx->userrsp (0 for kernel mode)
-    mov qword [rdi + 192], 0   ; ctx->ss (kernel mode)
+    ; Kernel code/data selectors for iretq-safe restores
+    mov qword [rdi + 168], 0x08   ; ctx->cs
+    mov rax, [rdi + 88]
+    add rax, 8
+    mov [rdi + 184], rax          ; ctx->userrsp (post-return rsp)
+    mov qword [rdi + 192], 0x10   ; ctx->ss
     
     ret
 

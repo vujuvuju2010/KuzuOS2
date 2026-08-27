@@ -663,6 +663,11 @@ int get_cursor_y() {
 
 void putchar_color(char c, uint8_t color) {
     if (!framebuffer) return;
+
+    extern int process_may_use_console(void);
+    if (!process_may_use_console()) {
+        return;
+    }
     
     int chars_per_line = fb_width / 8;    // 8 pixels wide per character (Linux TTY style)
     int max_lines = fb_height / 16;       // 16 pixels tall per character

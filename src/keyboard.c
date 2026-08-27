@@ -81,15 +81,20 @@ static int is_modifier_keycode(uint8_t kc) {
     return kc == 42 || kc == 54 || kc == 29 || kc == 97 || kc == 56 || kc == 100 || kc == 58;
 }
 
-void keyboard_init() {
-    buffer_head = 0;
-    buffer_tail = 0;
+void keyboard_clear_modifiers(void) {
     shift = 0;
     ctrl = 0;
     alt = 0;
     altgr = 0;
-    caps_lock = 0;
     e0_prefix = 0;
+    ctrl_z_pressed = 0;
+}
+
+void keyboard_init() {
+    buffer_head = 0;
+    buffer_tail = 0;
+    keyboard_clear_modifiers();
+    caps_lock = 0;
 
     // Flush keyboard buffer
     for (int i = 0; i < 10; i++) {

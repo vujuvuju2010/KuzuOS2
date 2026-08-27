@@ -2,6 +2,8 @@
 #include "memory.h"
 #include "vga.h"
 #include "kuzulib/fs/vfs.h"
+#include "interrupts.h"
+#include "irq.h"
 
 #define MAX_PROCESSES 256
 #define DEFAULT_STACK_SIZE 16384  // 16KB default stack
@@ -53,6 +55,7 @@ struct process* current_process = 0;
 struct process* shell_process = 0;
 struct process* init_process = 0;
 uint32_t next_pid = 1;
+static struct process* last_background_process = 0;
 
 void process_init() {
     // Initialize empty process list
@@ -124,6 +127,9 @@ uint32_t process_create(char* name, void* entry_point, uint64_t stack_size) {
     new_process->stack = stack_base;
     new_process->stack_size = stack_size;
     new_process->is_shell = 0;
+    new_process->is_background = 0;
+    new_process->needs_irq_restore = 0;
+    new_process->irq_ret_slot = 0;
     new_process->exit_code = 0;
     new_process->elf_filename_ptr = 0;  // No filename initially
     new_process->cmd_args[0] = '\0';    // No command args initially
@@ -184,6 +190,123 @@ void context_restore_wrapper(struct cpu_context* ctx) {
     context_restore(ctx);
 }
 
+// Save a process interrupted by an IRQ/syscall frame (Ctrl+Z backgrounding).
+void process_save_irq_context(struct process* proc, struct regs* r) {
+    proc->context.rax = r->rax;
+    proc->context.rbx = r->rbx;
+    proc->context.rcx = r->rcx;
+    proc->context.rdx = r->rdx;
+    proc->context.rsi = r->rsi;
+    proc->context.rdi = r->rdi;
+    proc->context.rbp = r->rbp;
+    proc->context.r8 = r->r8;
+    proc->context.r9 = r->r9;
+    proc->context.r10 = r->r10;
+    proc->context.r11 = r->r11;
+    proc->context.r12 = r->r12;
+    proc->context.r13 = r->r13;
+    proc->context.r14 = r->r14;
+    proc->context.r15 = r->r15;
+    proc->context.rip = r->rip;
+    proc->context.rflags = r->rflags;
+    proc->context.cs = r->cs ? r->cs : 0x08;
+    proc->context.ss = r->ss ? r->ss : 0x10;
+    proc->context.ds = r->ds ? r->ds : 0x10;
+
+    // Always use the dedicated slot — never touch the live ELF stack.
+    proc->irq_ret_slot = r->rip;
+    proc->context.rsp = (uint64_t)&proc->irq_ret_slot;
+    proc->context.userrsp = r->rsp;
+    proc->needs_irq_restore = 0;
+}
+
+int process_regs_on_process_stack(struct process* proc, struct regs* r) {
+    if (!proc || !r || !proc->stack || !proc->stack_size) {
+        return 0;
+    }
+    uint64_t sp = r->rsp;
+    return sp >= proc->stack && sp < proc->stack + proc->stack_size;
+}
+
+// Rebuild a ret frame on the process's real stack before context_restore().
+void process_prepare_context_restore(struct process* proc) {
+    if (!proc || !proc->context.rip) {
+        return;
+    }
+
+    // Prefer the real stack captured at interrupt/switch time (userrsp points
+    // just above the return-address slot, same layout context_save uses).
+    if (proc->stack && proc->stack_size &&
+        proc->context.userrsp > proc->stack &&
+        proc->context.userrsp <= proc->stack + proc->stack_size) {
+        uint64_t frame = proc->context.userrsp - 8;
+        if (frame >= proc->stack) {
+            *(uint64_t*)frame = proc->context.rip;
+            proc->context.rsp = frame;
+            proc->needs_irq_restore = 0;
+            return;
+        }
+    }
+
+    // Fallback: slot already chosen (context_save or irq_ret_slot).
+    if (proc->context.rsp) {
+        *(uint64_t*)proc->context.rsp = proc->context.rip;
+    }
+    proc->needs_irq_restore = 0;
+}
+
+// Patch an IRQ/syscall iretq frame to resume a process saved via context_save().
+void process_iretq_to_process(struct regs* r, struct process* proc) {
+    if (!r || !proc || !proc->context.rsp || !proc->context.rip) {
+        return;
+    }
+
+    r->rip = proc->context.rip;
+    r->rsp = proc->context.userrsp ? proc->context.userrsp : proc->context.rsp + 8;
+    r->cs = proc->context.cs ? proc->context.cs : 0x08;
+    r->ss = proc->context.ss ? proc->context.ss : 0x10;
+    r->rflags = proc->context.rflags ? proc->context.rflags : 0x202;
+
+    r->rax = proc->context.rax;
+    r->rbx = proc->context.rbx;
+    r->rcx = proc->context.rcx;
+    r->rdx = proc->context.rdx;
+    r->rsi = proc->context.rsi;
+    r->rdi = proc->context.rdi;
+    r->rbp = proc->context.rbp;
+    r->r8 = proc->context.r8;
+    r->r9 = proc->context.r9;
+    r->r10 = proc->context.r10;
+    r->r11 = proc->context.r11;
+    r->r12 = proc->context.r12;
+    r->r13 = proc->context.r13;
+    r->r14 = proc->context.r14;
+    r->r15 = proc->context.r15;
+    r->ds = proc->context.ds ? proc->context.ds : 0x10;
+
+    proc->state = PROCESS_RUNNING;
+    current_process = proc;
+}
+
+// Return foreground shell after a background CPU slice expires.
+void process_end_background_slice(struct regs* r) {
+    if (!r || !bg_slice_end || !current_process || !current_process->is_background) {
+        return;
+    }
+    if (!shell_process || shell_process->state != PROCESS_READY ||
+        !shell_process->context.rsp || !shell_process->context.rip) {
+        return;
+    }
+
+    bg_slice_end = 0;
+    bg_slice_active = 0;
+    process_save_irq_context(current_process, r);
+    current_process->state = PROCESS_BACKGROUND;
+    shell_process->state = PROCESS_RUNNING;
+    current_process = shell_process;
+    process_iretq_to_process(r, shell_process);
+}
+
 // Switch context between processes
 void context_switch(struct process* from, struct process* to) {
     if (!from || !to || from == to) {
@@ -199,7 +322,8 @@ void context_switch(struct process* from, struct process* to) {
     
     // Switch current process
     current_process = to;
-    
+
+    process_prepare_context_restore(to);
     // Restore new process context (this will jump to the new process)
     context_restore(&to->context);
 }
@@ -218,9 +342,10 @@ void process_schedule() {
         }
     }
     
-    // If current process is still RUNNING, mark it as READY for round-robin
+    // If current process is still RUNNING, mark it schedulable again
     if (current_process->state == PROCESS_RUNNING) {
-        current_process->state = PROCESS_READY;
+        current_process->state = current_process->is_background ?
+            PROCESS_BACKGROUND : PROCESS_READY;
     }
     
     // Find next ready process
@@ -229,15 +354,23 @@ void process_schedule() {
         next = process_list;
     }
     
-    // Look for ready process
+    // Look for ready/background process
     struct process* start = next;
     while (next != current_process) {
-        if (next && next->state == PROCESS_READY) {
-            // Switch to this process
-            next->state = PROCESS_RUNNING;
+        if (next && (next->state == PROCESS_READY ||
+                     next->state == PROCESS_BACKGROUND)) {
             struct process* from = current_process;
             current_process = next;
+            next->state = PROCESS_RUNNING;
+
             context_save(&from->context);
+            // When 'from' is switched back in, land here and stop — do NOT
+            // fall through to context_restore again (that caused INT 13/GPF).
+            if (current_process == from) {
+                return;
+            }
+
+            process_prepare_context_restore(next);
             context_restore(&next->context);
             return;
         }
@@ -250,10 +383,74 @@ void process_schedule() {
         }
     }
     
-    // No other ready processes, stay with current if it's ready
-    if (current_process->state == PROCESS_READY) {
+    // No other ready processes, stay with current if it's schedulable
+    if (current_process->state == PROCESS_READY ||
+        current_process->state == PROCESS_BACKGROUND) {
         current_process->state = PROCESS_RUNNING;
     }
+}
+
+int process_has_background(void) {
+    struct process* p = process_list;
+    while (p) {
+        if (p->state == PROCESS_BACKGROUND) {
+            return 1;
+        }
+        p = p->next;
+    }
+    return 0;
+}
+
+int process_may_use_console(void) {
+    if (!current_process) {
+        return 1;
+    }
+    return !current_process->is_background;
+}
+
+static struct process* process_find_background(void) {
+    if (last_background_process &&
+        last_background_process->state == PROCESS_BACKGROUND &&
+        last_background_process->is_background) {
+        return last_background_process;
+    }
+
+    struct process* p = process_list;
+    while (p) {
+        if (p->state == PROCESS_BACKGROUND && p->is_background) {
+            return p;
+        }
+        p = p->next;
+    }
+    return 0;
+}
+
+// Switch from foreground directly to a background process (skip init round-robin).
+void process_yield_background(void) {
+    struct process* bg = process_find_background();
+    if (!bg || !current_process || bg == current_process) {
+        return;
+    }
+
+    struct process* from = current_process;
+    from->state = PROCESS_READY;
+    bg->state = PROCESS_RUNNING;
+    current_process = bg;
+
+    context_save(&from->context);
+
+    // context_save records a return into context_switch; resume readline instead.
+    {
+        uint64_t resume = (uint64_t)&&bg_yield_resume;
+        from->context.rip = resume;
+        *(uint64_t*)(from->context.rsp) = resume;
+    }
+
+    process_prepare_context_restore(bg);
+    context_restore(&bg->context);
+
+bg_yield_resume:
+    return;
 }
 
 // Yield CPU to next process
@@ -273,6 +470,10 @@ void process_exit_current(int exit_code) {
     struct process* exiting = current_process;
     exiting->exit_code = exit_code;
     exiting->state = PROCESS_TERMINATED;
+
+    if (exiting == last_background_process) {
+        last_background_process = 0;
+    }
     
     // Close all open file descriptors for this process
     extern void close_all_fds(void);
@@ -428,18 +629,20 @@ void process_switch_to_shell() {
     }
 }
 
-// Stop current process (for Ctrl+Z)
-void process_stop_current() {
+// Move current foreground process to background (Ctrl+Z)
+void process_background_current() {
     if (!current_process) {
         return;
     }
-    
-    // Can't stop shell or init
+
     if (current_process == shell_process || current_process == init_process) {
         return;
     }
-    
-    // Stop the current process
+
+    if (current_process->is_background) {
+        return;
+    }
+
     print_color("\n[Process ", VGA_COLOR_LIGHT_GREY);
     char buf[16];
     int pos = 0;
@@ -457,17 +660,38 @@ void process_stop_current() {
     }
     buf[pos] = 0;
     print(buf);
-    print(" stopped]\n");
-    
-    // Mark as stopped and ready to switch
-    current_process->state = PROCESS_STOPPED;
-    
-    // Mark shell as ready to run
+    print(" running in background]\n");
+
+    current_process->is_background = 1;
+    current_process->state = PROCESS_BACKGROUND;
+    last_background_process = current_process;
+
     if (shell_process && shell_process->state != PROCESS_TERMINATED) {
         shell_process->state = PROCESS_READY;
     }
-    
-    // The actual context switch will happen in the next scheduler call
+}
+
+void process_cleanup_background_by_name(const char* name) {
+    if (!name || !name[0]) {
+        return;
+    }
+
+    struct process* p = process_list;
+    while (p) {
+        struct process* next = p->next;
+        if (p->state == PROCESS_BACKGROUND && p->is_background &&
+            strcmp(p->name, name) == 0) {
+            if (p == last_background_process) {
+                last_background_process = 0;
+            }
+            process_kill(p->pid);
+        }
+        p = next;
+    }
+}
+
+void process_stop_current() {
+    process_background_current();
 }
 
 // Continue a stopped process by PID
@@ -507,6 +731,10 @@ int process_kill(uint32_t pid) {
     // Otherwise mark as terminated and remove
     p->state = PROCESS_TERMINATED;
     p->exit_code = 128 + 9;
+
+    if (p == last_background_process) {
+        last_background_process = 0;
+    }
     
     // Free resources
     if (p->stack) {
@@ -554,7 +782,9 @@ int process_get_list(struct process** out_list, int max_count) {
     int count = 0;
     struct process* p = process_list;
     while (p && count < max_count) {
-        out_list[count++] = p;
+        if (p->state != PROCESS_TERMINATED) {
+            out_list[count++] = p;
+        }
         p = p->next;
     }
     return count;

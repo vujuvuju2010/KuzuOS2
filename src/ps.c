@@ -9,6 +9,7 @@
 #define PROCESS_BLOCKED 2
 #define PROCESS_TERMINATED 3
 #define PROCESS_STOPPED 4
+#define PROCESS_BACKGROUND 5
 
 // Types
 typedef unsigned long long uint64_t;
@@ -90,6 +91,7 @@ static const char* state_to_string(uint32_t state) {
         case PROCESS_BLOCKED: return "blocked";
         case PROCESS_TERMINATED: return "terminated";
         case PROCESS_STOPPED: return "stopped";
+        case PROCESS_BACKGROUND: return "background";
         default: return "unknown";
     }
 }

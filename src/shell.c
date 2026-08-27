@@ -202,6 +202,19 @@ void init_run() {
         }
         
         // Yield to other processes
+        extern int process_has_background(void);
+        extern void process_yield_background(void);
+        extern struct process* shell_process;
+        extern volatile int bg_slice_active;
+        extern volatile int bg_slice_end;
+
+        if (process_has_background() && !bg_slice_active &&
+            shell_process && shell_process->state == PROCESS_READY) {
+            bg_slice_active = 1;
+            bg_slice_end = 0;
+            process_yield_background();
+        }
+
         extern void process_yield(void);
         process_yield();
         __asm__ volatile("hlt");
@@ -263,13 +276,21 @@ int shell_readline(char* buf, int maxlen) {
     
     while (1) {
         char c = keyboard_get_char();
-if (!c)
-{
-    keyboard_poll();
-    extern void usb_poll(void);
-    usb_poll();
-    continue;
-}        
+        if (!c) {
+            keyboard_poll();
+            extern void usb_poll(void);
+            usb_poll();
+            extern volatile int bg_slice_active;
+            extern volatile int bg_slice_end;
+            extern int process_has_background(void);
+            extern void process_yield_background(void);
+            if (process_has_background() && !bg_slice_active) {
+                bg_slice_active = 1;
+                bg_slice_end = 0;
+                process_yield_background();
+            }
+            continue;
+        }        
         if (c == '\n' || c == '\r') {
             if (pos < maxlen) buf[pos] = '\0';
             else buf[maxlen-1] = '\0';

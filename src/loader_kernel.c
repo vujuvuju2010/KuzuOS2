@@ -543,11 +543,16 @@ int elf_load_and_execve(const char* filename, char* const argv[], char* const en
     while (base[ni] && ni < 31) { proc_name[ni] = base[ni]; ni++; }
     proc_name[ni] = '\0';
 
+    // Drop stale background jobs with the same name before launching again.
+    extern void process_cleanup_background_by_name(const char* name);
+    process_cleanup_background_by_name(proc_name);
+
     // Create process
     extern uint32_t process_create(char* name, void* entry_point, uint64_t stack_size);
     extern struct process* process_find(uint32_t pid);
-    extern void context_switch(struct process* from, struct process* to);
+    extern void context_save(struct cpu_context* ctx);
     extern void context_restore(struct cpu_context* ctx);
+    extern void process_prepare_context_restore(struct process* proc);
     extern struct process* current_process;
     extern struct process* shell_process;
 
@@ -590,21 +595,31 @@ int elf_load_and_execve(const char* filename, char* const argv[], char* const en
         proc->cmd_args[k] = '\0';
     }
 
-    // Switch to the new process
-    if (current_process && current_process != proc) {
-        proc->state = PROCESS_RUNNING;
-        context_switch(current_process, proc);
-    } else if (shell_process && shell_process->state == PROCESS_RUNNING) {
-        shell_process->state = PROCESS_READY;
-        current_process = shell_process;
-        proc->state = PROCESS_RUNNING;
-        context_switch(shell_process, proc);
-    } else {
+    // Switch to the new foreground process.  Save the caller's context with a
+    // resume label so Ctrl+Z can iretq back here instead of rebooting the shell.
+    struct process* from = current_process;
+    if (!from) {
         proc->state = PROCESS_RUNNING;
         current_process = proc;
         context_restore(&proc->context);
+        return 0;
     }
 
+    from->state = PROCESS_READY;
+    proc->state = PROCESS_RUNNING;
+    current_process = proc;
+
+    context_save(&from->context);
+    {
+        uint64_t resume = (uint64_t)&&exec_foreground_return;
+        from->context.rip = resume;
+        *(uint64_t*)(from->context.rsp) = resume;
+    }
+
+    process_prepare_context_restore(proc);
+    context_restore(&proc->context);
+
+exec_foreground_return:
     return 0;
 }
 
