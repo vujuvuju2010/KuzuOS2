@@ -571,6 +571,26 @@ void process_exit_current(int exit_code) {
         // Free the process structure
         kfree(to_free);
         
+        // CRITICAL: Re-initialize keyboard before restoring shell context
+        // This ensures keyboard works after command completes
+        extern void keyboard_init(void);
+        keyboard_init();
+        
+        // CRITICAL: Ensure PIC has both timer and keyboard unmasked
+        {
+            uint8_t mask;
+            __asm__ volatile("inb $0x21, %0" : "=a"(mask));
+            mask &= ~0x03;  // Unmask IRQ0 (timer) and IRQ1 (keyboard)
+            __asm__ volatile("outb %0, $0x21" : : "a"(mask));
+        }
+        
+        // Send EOI to ensure PIC is ready
+        __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0xA0));
+        __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0x20));
+        
+        // Enable interrupts globally
+        __asm__ volatile("sti");
+        
         // Restore shell context - this will jump to shell_run() and restart shell
         context_restore(&shell_process->context);
         
@@ -594,6 +614,25 @@ void process_exit_current(int exit_code) {
                 
                 // Free the process structure
                 kfree(to_free);
+                
+                // CRITICAL: Re-initialize keyboard before restoring context
+                extern void keyboard_init(void);
+                keyboard_init();
+                
+                // CRITICAL: Ensure PIC has both timer and keyboard unmasked
+                {
+                    uint8_t mask;
+                    __asm__ volatile("inb $0x21, %0" : "=a"(mask));
+                    mask &= ~0x03;  // Unmask IRQ0 (timer) and IRQ1 (keyboard)
+                    __asm__ volatile("outb %0, $0x21" : : "a"(mask));
+                }
+                
+                // Send EOI to ensure PIC is ready
+                __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0xA0));
+                __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0x20));
+                
+                // Enable interrupts globally
+                __asm__ volatile("sti");
                 
                 // Restore next process context - this will jump and never return
                 context_restore(&next->context);

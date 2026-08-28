@@ -29,8 +29,9 @@ void irq_handler(struct regs* r) {
     if (irq_no == 0) {
         timer_ticks++;
         
-        keyboard_poll();
+        // Keyboard is now handled by IRQ1 handler only - avoid double-reading scancodes
 
+        // Background process scheduling
         if (process_has_background()) {
             if (++bg_timer_count >= 10) {
                 bg_timer_count = 0;
@@ -41,6 +42,7 @@ void irq_handler(struct regs* r) {
             bg_schedule_pending = 0;
         }
 
+        // Track background process CPU slice
         if (current_process && current_process->is_background && bg_slice_active) {
             if (++bg_slice_ticks >= 10) {
                 bg_slice_ticks = 0;
@@ -50,30 +52,41 @@ void irq_handler(struct regs* r) {
             bg_slice_ticks = 0;
         }
 
+        // End background slice if time expired
         if (bg_slice_end && current_process && current_process->is_background &&
             process_regs_on_process_stack(current_process, r)) {
             process_end_background_slice(r);
         }
 
-                {
+        // Handle Ctrl+Z
+        {
             extern volatile int ctrl_z_pressed;
             extern struct process* shell_process;
             extern struct process* init_process;
             if (ctrl_z_pressed && current_process &&
                 current_process != shell_process &&
-                current_process != init_process &&
-                process_regs_on_process_stack(current_process, r)) {
+                current_process != init_process) {
                 process_handle_ctrl_z(r);
             }
         }
+        
+        // CRITICAL: If there's a background process and we're in shell,
+        // yield to let background process run
+        if (bg_schedule_pending && current_process == shell_process &&
+            shell_process->state == PROCESS_READY) {
+            bg_schedule_pending = 0;
+            extern void process_yield_background(void);
+            process_yield_background();
+        }
     }
     
-    // Keyboard interrupt (IRQ 1)
+    // Keyboard interrupt (IRQ 1) - handle keyboard input directly
     if (irq_no == 1) {
         keyboard_handler();
     }
     
-    // EOI gönder
+    // EOI gönder - MUST be sent for ALL IRQs, including timer (IRQ0) and keyboard (IRQ1)
+    // This acknowledges the interrupt and allows the PIC to send more interrupts
     if (irq_no >= 8) {
         __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0xA0));
     }
@@ -89,6 +102,7 @@ void process_handle_ctrl_z(struct regs* r) {
     extern volatile int ctrl_z_pressed;
     extern struct process* shell_process;
     extern struct process* init_process;
+    extern void keyboard_init(void);
 
     if (!ctrl_z_pressed) {
         return;
@@ -101,14 +115,44 @@ void process_handle_ctrl_z(struct regs* r) {
     }
 
     ctrl_z_pressed = 0;
+    
+    // Reset background slice tracking, but KEEP bg_schedule_pending for timer IRQ
     bg_slice_active = 0;
     bg_slice_end = 0;
-    bg_schedule_pending = 0;
     bg_timer_count = 0;
 
     keyboard_clear_modifiers();
     process_background_current();
-    force_schedule_after_irq(r);
+    
+    // Save the background process context from the IRQ frame
+    process_save_irq_context(current_process, r);
+    current_process->state = PROCESS_BACKGROUND;
+    
+    // CRITICAL: Re-initialize keyboard before switching to shell
+    // This ensures keyboard works when shell resumes
+    keyboard_init();
+    
+    // CRITICAL: Ensure PIC has both timer and keyboard unmasked
+    {
+        uint8_t mask;
+        __asm__ volatile("inb $0x21, %0" : "=a"(mask));
+        mask &= ~0x03;  // Unmask IRQ0 (timer) and IRQ1 (keyboard)
+        __asm__ volatile("outb %0, $0x21" : : "a"(mask));
+    }
+    
+    // CRITICAL: Enable interrupts and send EOI so keyboard/timer continue working
+    __asm__ volatile("sti");
+    __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0xA0));
+    __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0x20));
+    
+    // Set shell to READY state so timer IRQ will yield to background process
+    // Set bg_schedule_pending so timer IRQ knows to yield to background
+    if (shell_process && shell_process->state != PROCESS_TERMINATED) {
+        shell_process->state = PROCESS_READY;
+        bg_schedule_pending = 1;  // Tell timer IRQ to yield to background process
+        current_process = shell_process;
+        context_restore(&shell_process->context);
+    }
 }
 
 // Return to shell after Ctrl+Z.
@@ -123,8 +167,9 @@ static void force_schedule_after_irq(struct regs* r) {
     extern void init_process_context(struct process* proc, void* entry_point, uint64_t stack_base, uint64_t stack_size);
     extern void shell_run(void);
     extern void keyboard_clear_modifiers(void);
-    extern void keyboard_poll(void);
-    extern void keyboard_flush_buffer(void);
+    extern char keyboard_buffer[];
+    extern int buffer_head;
+    extern int buffer_tail;
 
     if (!current_process || current_process->state != PROCESS_BACKGROUND) {
         return;
@@ -140,10 +185,36 @@ static void force_schedule_after_irq(struct regs* r) {
     process_save_irq_context(current_process, r);
     current_process->state = PROCESS_BACKGROUND;
 
-    // Clear keyboard state and flush buffer
+    // Clear modifiers FIRST before any keyboard operations
     keyboard_clear_modifiers();
-    keyboard_poll();
-    keyboard_flush_buffer();
+    
+    // Flush software keyboard buffer
+    buffer_head = 0;
+    buffer_tail = 0;
+    
+    // CRITICAL: Flush hardware keyboard buffer and reset controller
+    {
+        uint8_t status;
+        int i;
+        
+        // Read any pending scancodes from the keyboard output buffer
+        for (i = 0; i < 32; i++) {
+            __asm__ volatile("inb $0x64, %0" : "=a"(status));
+            if (!(status & 0x01)) break;
+            {
+                uint8_t dummy;
+                __asm__ volatile("inb $0x60, %0" : "=a"(dummy));
+            }
+        }
+    }
+    
+    // CRITICAL: Unmask keyboard IRQ (IRQ1) and timer IRQ (IRQ0)
+    {
+        uint8_t mask;
+        __asm__ volatile("inb $0x21, %0" : "=a"(mask));
+        mask &= ~0x03;  // Unmask IRQ0 (timer) and IRQ1 (keyboard)
+        __asm__ volatile("outb %0, $0x21" : : "a"(mask));
+    }
 
     // Re-initialize shell context to restart from shell_run()
     // This is necessary because the shell's saved context is from the middle
@@ -151,13 +222,23 @@ static void force_schedule_after_irq(struct regs* r) {
     // init_process_context already sets up the stack with entry point as return address
     init_process_context(shell_process, (void*)shell_run, shell_process->stack, shell_process->stack_size);
     
+    // CRITICAL: Ensure interrupts are enabled in the restored context
+    // The timer interrupt (IRQ0) must fire for keyboard_poll() to be called!
+    shell_process->context.rflags = 0x202;  // IF=1 (interrupts enabled), reserved bit=1
+    
     shell_process->state = PROCESS_RUNNING;
     current_process = shell_process;
     
+    // CRITICAL: Enable interrupts globally before restore
+    __asm__ volatile("sti");
+    
     // CRITICAL: Send EOI BEFORE context_restore() because it never returns!
     // Without this, the PIC won't send more interrupts and keyboard will stop working.
-    __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0xA0));
-    __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0x20));
+    // Send EOI for IRQ0 (timer) and IRQ1 (keyboard) to ensure both can fire again
+    // Note: We're currently in timer IRQ context, so we MUST send EOI here
+    // because context_restore() will jump to shell and never return to irq_handler()
+    __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0xA0));  // EOI to slave PIC
+    __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0x20));  // EOI to master PIC
     
     context_restore(&shell_process->context);
     

@@ -117,16 +117,16 @@ void keyboard_init() {
 }
 
 void poll_input_devices(void) {
-    keyboard_poll();
+    // Don't call keyboard_poll() here - it reads scancodes which conflicts
+    // with keyboard_handler() which is called on IRQ1
+    // Only poll USB
     extern void usb_poll(void);
     usb_poll();
 }
 
 void keyboard_handler() {
-    return;
-}
-
-void keyboard_poll() {
+    // IRQ1 handler - read scancode and process it
+    // This is called directly when a keyboard interrupt occurs
     uint8_t status;
     __asm__ volatile("inb $0x64, %0" : "=a"(status));
 
@@ -136,13 +136,13 @@ void keyboard_poll() {
     uint8_t scancode;
     __asm__ volatile("inb $0x60, %0" : "=a"(scancode));
 
+    // Process the scancode - same logic as keyboard_poll()
     if (scancode == 0xE0) {
         e0_prefix = 1;
         return;
     }
 
     if (scancode == 0xE1) {
-        // Ignore E1 (Pause key)
         e0_prefix = 0;
         return;
     }
@@ -170,9 +170,7 @@ void keyboard_poll() {
         return;
 
     // Handle Ctrl+Z (stop process) - SET FLAG, handle in timer interrupt
-    // Keycode 44 = Z key
     if (ctrl && keycode == 44) {
-        extern volatile int ctrl_z_pressed;
         ctrl_z_pressed = 1;
         return;
     }
@@ -191,6 +189,12 @@ void keyboard_poll() {
     uint16_t c = keymap_get_char(keycode, use_shift, ctrl, alt, altgr);
     if (c > 0 && c < 256)
         push_char((char)c);
+}
+
+void keyboard_poll() {
+    // No-op: keyboard is now handled exclusively by keyboard_handler() (IRQ1)
+    // This function is kept for compatibility but does nothing to avoid
+    // double-reading scancodes
 }
 
 char keyboard_get_char() {
