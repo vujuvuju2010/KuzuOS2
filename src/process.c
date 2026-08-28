@@ -74,7 +74,7 @@ void init_process_context(struct process* proc, void* entry_point, uint64_t stac
     }
     
   // ts does NOT work twin
-  // TODO: FIX THE MOTHERFUCKING STACK  
+  // TODO: FIX THE MOTHERFUCKING STACK
     uint64_t* stack = (uint64_t*)(stack_base + stack_size);
     stack--;  // Allocate space for return address
     *stack = (uint64_t)entry_point;  // Put entry point as return address
@@ -97,6 +97,33 @@ void init_process_context(struct process* proc, void* entry_point, uint64_t stac
     
     // Set initial flags (interrupts enabled)
     proc->context.rflags = 0x202;  // IF=1, reserved bit=1
+}
+
+// Suspend current process at a valid resume point (for Ctrl+Z support)
+// This saves the context such that it can be restored to resume execution
+// at the point where this function was called (via process_suspend_self_yield())
+void process_suspend_self() {
+    extern void context_switch(struct process* from, struct process* to);
+    extern struct process* shell_process;
+    
+    if (!current_process || !shell_process) {
+        return;
+    }
+    
+    // Mark shell as ready and switch to it
+    // The shell will resume at its yield point
+    shell_process->state = PROCESS_READY;
+    
+    // Save current context and switch to shell
+    // When this process is continued, it will resume from here
+    context_switch(current_process, shell_process);
+    
+    // When we return here, the process is being resumed (fg/bg)
+    // Clear background flag if resuming as foreground
+    if (current_process->is_background && current_process->state == PROCESS_RUNNING) {
+        current_process->is_background = 0;
+        current_process->state = PROCESS_RUNNING;
+    }
 }
 
 uint32_t process_create(char* name, void* entry_point, uint64_t stack_size) {

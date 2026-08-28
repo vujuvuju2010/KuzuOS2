@@ -90,6 +90,11 @@ void keyboard_clear_modifiers(void) {
     ctrl_z_pressed = 0;
 }
 
+void keyboard_flush_buffer(void) {
+    buffer_head = 0;
+    buffer_tail = 0;
+}
+
 void keyboard_init() {
     buffer_head = 0;
     buffer_tail = 0;

@@ -14,6 +14,7 @@ char keyboard_get_char();
 
 extern volatile int ctrl_z_pressed;
 void keyboard_clear_modifiers(void);
+void keyboard_flush_buffer(void);
 void poll_input_devices(void);
 
 #endif 
