@@ -50,10 +50,10 @@ void gdt_init(void) {
     gp.limit = (sizeof(struct gdt_entry) * 7) - 1;
     gp.base  = (uint64_t)&gdt;
     gdt_set_gate(0, 0, 0, 0, 0);
-    gdt_set_gate(1, 0, 0, 0x9A, 0x20);
-    gdt_set_gate(2, 0, 0, 0x92, 0x00);
-    gdt_set_gate(3, 0, 0, 0xFA, 0x20);
-    gdt_set_gate(4, 0, 0, 0xF2, 0x00);
+    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xA0);  // kernel code - full limit, G=1, L=1
+    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xC0);  // kernel data - full limit, G=1, D/B=1
+    gdt_set_gate(3, 0, 0xFFFFFFFF, 0x9FA, 0xA0); // user code - DPL=3, full limit, G=1, L=1
+    gdt_set_gate(4, 0, 0xFFFFFFFF, 0x9F2, 0xC0); // user data - DPL=3, full limit, G=1, D/B=1
     tss_init(5, (uint64_t)stack64_top);   // was 0x90000
     gdt_flush((uint64_t)&gp);
     tss_flush();

@@ -257,6 +257,29 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr) {
     
     // Initialize service manager
     print("[ "); print_color("..", VGA_COLOR_YELLOW); print(" ] Initializing service manager... "); delay(200);
+    
+    // Create /etc and /etc/services directory in ramfs for service configs
+    extern int vfs_mkdir(const char *path);
+    vfs_mkdir("/etc");
+    vfs_mkdir("/etc/services");
+    print_color("  Created /etc/services directory\n", VGA_COLOR_LIGHT_CYAN);
+    
+    // Copy service .conf files from ISO (/etc/services/*.conf) to ramfs
+    extern int fs_copy_iso_to_ramfs(const char* iso_path, const char* ramfs_path);
+    int copy_result;
+    copy_result = fs_copy_iso_to_ramfs("/etc/services/httpd.conf", "/etc/services/httpd.conf");
+    if (copy_result < 0) {
+        print_color("  Warning: Failed to copy httpd.conf\n", VGA_COLOR_LIGHT_RED);
+    }
+    copy_result = fs_copy_iso_to_ramfs("/etc/services/network.conf", "/etc/services/network.conf");
+    if (copy_result < 0) {
+        print_color("  Warning: Failed to copy network.conf\n", VGA_COLOR_LIGHT_RED);
+    }
+    copy_result = fs_copy_iso_to_ramfs("/etc/services/README.conf", "/etc/services/README.conf");
+    if (copy_result < 0) {
+        print_color("  Warning: Failed to copy README.conf\n", VGA_COLOR_LIGHT_RED);
+    }
+    
     service_manager_init();
     service_load_all_configs();
     print_color("OK\n", VGA_COLOR_LIGHT_GREEN);

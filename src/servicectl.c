@@ -192,14 +192,46 @@ static int do_restart(const char* name) {
     return 0;
 }
 
-void _start(int argc, char* argv[]) {
+void _start(unsigned long long argc_val, unsigned long long argv_array_addr) {
+    // In the System V AMD64 ABI for _start:
+    // - argc_val contains the actual argc value
+    // - argv_array_addr contains the address where argv pointers are stored on stack
+    //   argv_array_addr points to argv[0], argv_array_addr+8 points to argv[1], etc.
+    
+    int argc = (int)argc_val;
+    unsigned long long* argv_arr = (unsigned long long*)argv_array_addr;
+    
+    // Validate argc first - must be at least 1 (program name)
+    if (argc < 1 || argc > 100) {
+        print("servicectl: invalid argc=");
+        print_int(argc);
+        print("\n");
+        z_exit(1);
+    }
+    
+    // Check for minimum args for commands
     if (argc < 2) {
         print_usage();
         z_exit(1);
     }
     
-    const char* cmd = argv[1];
-    const char* service_name = argc > 2 ? argv[2] : (const char*)0;
+    // Get argv[0] which is the program name (e.g., "servicectl")
+    // argv_arr[0] gives us the pointer stored at argv_array_addr
+    const char* prog = (const char*)argv_arr[0];
+    
+    // Get argv[1] which is the command (e.g., "list", "start")
+    // argv_arr[1] gives us the pointer stored at argv_array_addr + 8
+    const char* cmd = (const char*)argv_arr[1];
+    
+    // Validate cmd pointer
+    if ((unsigned long long)cmd < 0x400000 || (unsigned long long)cmd > 0xFFFFFFFF) {
+        print("servicectl: invalid cmd pointer=");
+        print_int((int)(unsigned long long)cmd);
+        print("\n");
+        z_exit(1);
+    }
+    
+    const char* service_name = (argc > 2) ? (const char*)argv_arr[2] : (const char*)0;
     
     if (str_cmp(cmd, "list") == 0) {
         z_exit(do_list());

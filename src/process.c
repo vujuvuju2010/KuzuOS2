@@ -369,10 +369,20 @@ void process_schedule() {
         }
     }
     
+    // SERVICE processes should NEVER be switched out unless blocked
+    // They stay in RUNNING state permanently
+    if (current_process->state == PROCESS_SERVICE) {
+        // Service is running, just return - let it continue
+        return;
+    }
+    
     // If current process is still RUNNING, mark it schedulable again
     if (current_process->state == PROCESS_RUNNING) {
-        current_process->state = current_process->is_background ?
-            PROCESS_BACKGROUND : PROCESS_READY;
+        if (current_process->is_background) {
+            current_process->state = PROCESS_BACKGROUND;
+        } else {
+            current_process->state = PROCESS_READY;
+        }
     }
     
     // Find next ready process
@@ -381,18 +391,18 @@ void process_schedule() {
         next = process_list;
     }
     
-    // Look for ready/background process
+    // Look for ready/background/service process
     struct process* start = next;
     while (next != current_process) {
         if (next && (next->state == PROCESS_READY ||
-                     next->state == PROCESS_BACKGROUND)) {
+                     next->state == PROCESS_BACKGROUND ||
+                     next->state == PROCESS_SERVICE)) {
             struct process* from = current_process;
             current_process = next;
             next->state = PROCESS_RUNNING;
 
             context_save(&from->context);
-            // When 'from' is switched back in, land here and stop — do NOT
-            // fall through to context_restore again (that caused INT 13/GPF).
+            // When 'from' is switched back in, land here and stop
             if (current_process == from) {
                 return;
             }
@@ -412,7 +422,8 @@ void process_schedule() {
     
     // No other ready processes, stay with current if it's schedulable
     if (current_process->state == PROCESS_READY ||
-        current_process->state == PROCESS_BACKGROUND) {
+        current_process->state == PROCESS_BACKGROUND ||
+        current_process->state == PROCESS_SERVICE) {
         current_process->state = PROCESS_RUNNING;
     }
 }

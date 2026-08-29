@@ -283,17 +283,35 @@ static void elf_execute_internal(const char* filename, uint32_t stack_base, uint
         }
     }
 
-    // Build stack from top: argc, argv[0..argc-1], NULL, NULL(envp), AT_NULL, 0
+    // Build stack from top: argc, argv[0..argc-1], NULL( argv terminator), NULL(envp terminator), AT_NULL, 0
+    // x86-64 ABI stack layout for _start:
+    //   [rsp+0]   = argc
+    //   [rsp+8]   = argv[0]
+    //   [rsp+16]  = argv[1]
+    //   ...
+    //   [rsp+8*argc] = NULL (argv terminator)
+    //   [rsp+8*(argc+1)] = envp[0] (or NULL if no envp)
+    //   ...
+    //   [rsp+8*(argc+1+envc)] = NULL (envp terminator)
+    //   [rsp+8*(argc+1+envc+1)] = AT_NULL
+    //   [rsp+8*(argc+1+envc+2)] = 0 (auxv terminator value)
+    
     uint64_t* stack = (uint64_t*)user_stack_top;
-    stack -= 1; stack[0] = 0;        // auxv terminator value
-    stack -= 1; stack[0] = AT_NULL;  // auxv terminator type
-    stack -= 1; stack[0] = 0;        // envp NULL terminator
-    // argv pointers in reverse (push NULL first, then argv[argc-1]..argv[0])
-    stack -= 1; stack[0] = 0;        // argv NULL terminator
+    
+    // First push auxv terminator (value)
+    stack -= 1; stack[0] = 0;
+    // Then auxv terminator (type)
+    stack -= 1; stack[0] = AT_NULL;
+    // envp NULL terminator (no envp, just NULL)
+    stack -= 1; stack[0] = 0;
+    // argv NULL terminator
+    stack -= 1; stack[0] = 0;
+    // Push argv pointers in reverse order
     for (int k = argc - 1; k >= 0; k--) {
         stack -= 1;
         stack[0] = (uint64_t)argv_ptrs[k];
     }
+    // Finally push argc at the top
     stack -= 1; stack[0] = (uint64_t)argc;
 
     unsigned long* sp = (unsigned long*)stack;
@@ -620,6 +638,104 @@ int elf_load_and_execve(const char* filename, char* const argv[], char* const en
     context_restore(&proc->context);
 
 exec_foreground_return:
+    return 0;
+}
+
+// Load ELF and create a background process (for services)
+// Unlike elf_load_and_execve, this doesn't switch to the new process
+int elf_load_and_create_background(const char* filename, char* const argv[], uint32_t* pid_out) {
+    // Count argc
+    int argc = 0;
+    if (argv) {
+        while (argv[argc] != NULL && argc < 31) argc++;
+    }
+
+    // Build a flat blob of null-separated argv strings and store offsets
+    char argv_blob[512];
+    int  argv_offsets[32];
+    int  blob_pos = 0;
+
+    for (int i = 0; i < argc && blob_pos < 511; i++) {
+        argv_offsets[i] = blob_pos;
+        const char* s = argv[i];
+        while (*s && blob_pos < 510) argv_blob[blob_pos++] = *s++;
+        argv_blob[blob_pos++] = '\0';
+    }
+
+    // Allocate and copy filename
+    int fname_len = 0;
+    while (filename[fname_len]) fname_len++;
+    char* filename_copy = (char*)kmalloc(fname_len + 1);
+    if (!filename_copy) {
+        print_color("[elf_load_background] kmalloc failed for filename\n", VGA_COLOR_LIGHT_RED);
+        return -1;
+    }
+    for (int i = 0; i <= fname_len; i++) filename_copy[i] = filename[i];
+
+    // Extract basename for process name
+    const char* base = filename_copy;
+    for (int i = 0; filename_copy[i]; i++)
+        if (filename_copy[i] == '/') base = filename_copy + i + 1;
+
+    char proc_name[32];
+    int ni = 0;
+    while (base[ni] && ni < 31) { proc_name[ni] = base[ni]; ni++; }
+    proc_name[ni] = '\0';
+
+    // Create process
+    extern uint32_t process_create(char* name, void* entry_point, uint64_t stack_size);
+    extern struct process* process_find(uint32_t pid);
+
+    uint32_t pid = process_create(proc_name, (void*)elf_process_wrapper, 16384);
+    if (!pid) {
+        print_color("[elf_load_background] process_create failed\n", VGA_COLOR_LIGHT_RED);
+        kfree(filename_copy);
+        return -1;
+    }
+
+    struct process* proc = process_find(pid);
+    if (!proc) {
+        print_color("[elf_load_background] process_find failed\n", VGA_COLOR_LIGHT_RED);
+        kfree(filename_copy);
+        return -1;
+    }
+
+    // Store filename and proper argv in process struct
+    proc->elf_filename_ptr = filename_copy;
+    proc->exec_argc = argc;
+
+    // Zero out argv storage first
+    for (int i = 0; i < 512; i++) proc->exec_argv_data[i] = 0;
+    for (int i = 0; i < 32; i++) proc->exec_argv_offsets[i] = 0;
+
+    // Copy argv blob and offsets
+    for (int i = 0; i < blob_pos && i < 511; i++) proc->exec_argv_data[i] = argv_blob[i];
+    for (int i = 0; i < argc && i < 32; i++) proc->exec_argv_offsets[i] = argv_offsets[i];
+
+    // Mark process as SERVICE (always schedulable for background execution)
+    proc->state = PROCESS_SERVICE;
+
+    // Return the PID
+    *pid_out = pid;
+    
+    print_color("[elf_load_background] created background process '", VGA_COLOR_LIGHT_GREEN);
+    print_color(proc_name, VGA_COLOR_LIGHT_GREEN);
+    print_color("' with PID ", VGA_COLOR_LIGHT_GREEN);
+    char pid_buf[16];
+    int n = pid;
+    int pos = 0;
+    if (n == 0) pid_buf[pos++] = '0';
+    else {
+        while (n > 0) {
+            pid_buf[pos++] = '0' + (n % 10);
+            n /= 10;
+        }
+    }
+    for (int j = pos - 1; j >= 0; j--) {
+        putchar(pid_buf[j]);
+    }
+    print_color("\n", VGA_COLOR_LIGHT_GREEN);
+
     return 0;
 }
 

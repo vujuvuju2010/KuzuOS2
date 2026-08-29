@@ -15,6 +15,7 @@ typedef unsigned long long uint64_t;
 #define PROCESS_TERMINATED 3
 #define PROCESS_STOPPED 4  // Explicitly stopped (fg/bg resume)
 #define PROCESS_BACKGROUND 5  // Running in background after Ctrl+Z
+#define PROCESS_SERVICE 6  // Background service (always schedulable)
 
 
 struct vfs_node; // forward declare that bad bih 

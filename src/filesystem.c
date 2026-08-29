@@ -1758,6 +1758,22 @@ int fs_create_file(char* path, char* data, uint32_t size) {
 int fs_read_file(char* path, char* buffer, uint32_t max_size) {
     if (!path || !buffer) return -1;
 
+    // Check ramfs first (for dynamically created files like /etc/services/*.conf)
+    extern ramfs_entry_t* ramfs_get_entry(const char *path);
+    ramfs_entry_t* entry = ramfs_get_entry(path);
+    if (entry && !entry->is_directory) {
+        // For ramfs files, we need to read from the data buffer
+        // The data pointer in ramfs_entry points to the file content
+        if (entry->data && entry->size > 0) {
+            uint32_t size = entry->size;
+            if (size > max_size) size = max_size;
+            for (uint32_t i = 0; i < size; i++) {
+                buffer[i] = ((char*)entry->data)[i];
+            }
+            return (int)size;
+        }
+    }
+
     // Try TinyFS first
     struct fs_header header;
     if (fs_read_header(&header) == 0 && header.magic == FS_MAGIC) {
@@ -2122,6 +2138,22 @@ int fs_readdir_index(char *dir_path, uint32_t idx,
         }
     }
     
+    // Try ramfs first (for dynamically created directories like /etc/services)
+    extern int ramfs_get_entry_by_index_in_dir(const char *dir_path, uint32_t index, char **name, int *is_dir);
+    char *ramfs_name;
+    int ramfs_isdir;
+    if (ramfs_get_entry_by_index_in_dir(dir_path, idx, &ramfs_name, &ramfs_isdir) == 0) {
+        // Copy name
+        int i = 0;
+        while (ramfs_name[i] && i < 255) {
+            name_out[i] = ramfs_name[i];
+            i++;
+        }
+        name_out[i] = '\0';
+        *is_dir_out = ramfs_isdir;
+        return 1;
+    }
+    
     // Try ISO filesystem
     iso_extent e; int isdir = 0;
     if (iso_lookup_path(dir_path, &e, &isdir) != 0 || !isdir) return -1;
@@ -2214,6 +2246,92 @@ void fs_create_directory_raw(const char *path) {
     header->files[slot].used        = 1;
     header->files[slot].is_directory = 1;
     header->num_files++;
+}
+
+// Copy a file from ISO to ramfs
+int fs_copy_iso_to_ramfs(const char* iso_path, const char* ramfs_path) {
+    // Read file from ISO
+    char buffer[4096];
+    int size = fs_read_file((char*)iso_path, buffer, sizeof(buffer));
+    if (size <= 0) {
+        extern void print(const char*);
+        print("[fs_copy_iso_to_ramfs] failed to read ");
+        print(iso_path);
+        print("\n");
+        return -1;
+    }
+    
+    // Create ramfs entry for the file
+    ramfs_init();
+    
+    // Find free slot
+    int slot = -1;
+    for (int i = 0; i < MAX_RAMFS_ENTRIES; i++) {
+        if (!ramfs_entries[i].used) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == -1) return -1;
+    
+    // Extract name from path
+    const char* name = ramfs_path;
+    for (int i = 0; ramfs_path[i]; i++) {
+        if (ramfs_path[i] == '/') name = &ramfs_path[i + 1];
+    }
+    
+    // Allocate memory for data
+    char* data = (char*)kmalloc(size);
+    if (!data) return -1;
+    
+    // Copy data
+    for (int i = 0; i < size; i++) {
+        data[i] = buffer[i];
+    }
+    
+    // Create entry
+    int i = 0;
+    while (ramfs_path[i] && i < 255) {
+        ramfs_entries[slot].path[i] = ramfs_path[i];
+        i++;
+    }
+    ramfs_entries[slot].path[i] = '\0';
+    
+    i = 0;
+    while (name[i] && i < 63) {
+        ramfs_entries[slot].name[i] = name[i];
+        i++;
+    }
+    ramfs_entries[slot].name[i] = '\0';
+    
+    ramfs_entries[slot].is_directory = 0;
+    ramfs_entries[slot].data = data;
+    ramfs_entries[slot].size = size;
+    ramfs_entries[slot].used = 1;
+    
+    extern void print(const char*);
+    print("[fs_copy_iso_to_ramfs] copied ");
+    print(iso_path);
+    print(" -> ");
+    print(ramfs_path);
+    print(" (");
+    char size_buf[16];
+    int n = size;
+    int pos = 0;
+    if (n == 0) size_buf[pos++] = '0';
+    else {
+        while (n > 0) {
+            size_buf[pos++] = '0' + (n % 10);
+            n /= 10;
+        }
+    }
+    // Reverse
+    for (int j = pos - 1; j >= 0; j--) {
+        putchar(size_buf[j]);
+    }
+    print(" bytes)\n");
+    
+    return 0;
 }
 
 // yay 1944

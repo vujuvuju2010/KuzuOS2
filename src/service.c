@@ -334,7 +334,7 @@ struct service* service_find_by_pid(int pid) {
     return 0;
 }
 
-// Start a service by name
+// Start a service by name - creates a background process
 int service_start(const char* name) {
     if (!name) {
         return -1;
@@ -369,18 +369,73 @@ int service_start(const char* name) {
     svc_printf(svc->config.exec_path);
     svc_printf(")\n");
     
-    // Store service PID marker (service execution uses execve from shell context)
-    // Services are started by calling execve which creates a new process
-    // The service manager tracks the service state but doesn't directly manage the process
+    // Build argv array for the service
+    // argv[0] = exec_path (program name)
+    // argv[1+] = args from exec_args (if any)
+    static char* argv[16];
+    static char argv_storage[512];  // Static storage for argv strings
+    int argc = 0;
+    int storage_pos = 0;
     
-    // For now, mark as running - actual execution happens via execve syscall
-    // which is called when user runs the service from shell or via auto-start
+    // Clear storage
+    for (int i = 0; i < 512; i++) argv_storage[i] = 0;
+    
+    // argv[0] = exec_path
+    argv[argc++] = svc->config.exec_path;
+    
+    // Parse exec_args if present and copy to storage
+    if (svc->config.exec_args[0] != '\0') {
+        const char* args = svc->config.exec_args;
+        int arg_start = storage_pos;
+        
+        for (int i = 0; args[i] && argc < 15; i++) {
+            if (args[i] == ' ') {
+                argv_storage[storage_pos++] = '\0';
+                argv[argc++] = argv_storage + arg_start;
+                arg_start = storage_pos;
+            } else {
+                if (storage_pos < 511) {
+                    argv_storage[storage_pos++] = args[i];
+                }
+            }
+        }
+        // Don't forget last argument
+        if (storage_pos > arg_start && argc < 15) {
+            argv_storage[storage_pos++] = '\0';
+            argv[argc++] = argv_storage + arg_start;
+        }
+    }
+    
+    // NULL terminate argv
+    argv[argc] = (char*)0;
+    
+    // Create process directly without using execve (which is for foreground)
+    // We need to call the internal loader function for background processes
+    extern int elf_load_and_create_background(const char* filename, char* const argv[], uint32_t* pid_out);
+    
+    uint32_t pid = 0;
+    int result = elf_load_and_create_background(svc->config.exec_path, argv, &pid);
+    
+    if (result < 0 || pid == 0) {
+        svc_printf("service: failed to start '");
+        svc_printf(name);
+        svc_printf("'\n");
+        svc->state = SERVICE_FAILED;
+        return -1;
+    }
+    
+    // Store the PID and mark as running
+    svc->config.pid = pid;
     svc->state = SERVICE_RUNNING;
-    svc->config.pid = 0;  // Will be set when process is created
+    svc->start_time = 0;
     
     svc_printf("service: '");
     svc_printf(name);
-    svc_printf("' started\n");
+    svc_printf("' started with PID ");
+    char pbuf[16];
+    svc_itoa(svc->config.pid, pbuf, sizeof(pbuf));
+    svc_printf(pbuf);
+    svc_printf("\n");
     return 0;
 }
 
