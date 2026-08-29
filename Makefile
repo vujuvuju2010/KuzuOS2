@@ -19,7 +19,7 @@ kernel.bin: boot.o kernel.o usb.o usbmsc.o keyboardusb.o vfs.o tty.o memory.o pm
             context_switch.o elf_loader.o \
             z_printf.o z_utils.o z_err.o z_trampo.o \
             net.o e1000.o ethernet.o arp.o net_ip.o tcp.o udp.o dns.o \
-            keymap_loader.o
+            keymap_loader.o service.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 # --------------------------------------------------------------------
@@ -138,6 +138,9 @@ z_utils.o: src/kuzulib/string/z_utils.c
 z_err.o: src/kuzulib/stdio/z_err.c
 	$(CC) $(CFLAGS) -Isrc/ -c -o $@ $<
 
+
+service.o: src/service.c src/service.h
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 # --------------------------------------------------------------------
 # Network stack
@@ -346,6 +349,12 @@ kill: kill.o libkuzu.a
 kill.o: src/kill.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+servicectl: servicectl.o libkuzu.a
+	$(LD) -m elf_x86_64 -s -Ttext=0x00400000 -o $@ servicectl.o libkuzu.a
+
+servicectl.o: src/servicectl.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 # TinyCC Compiler (using real TinyCC libtcc only, skip tcc.c main)
 # All TinyCC modules are #included in libtcc.c when ONE_SOURCE=1
 tcc: tcc_start.o tinycc_kuzuos.o tinycc_libtcc.o libkuzu.a
@@ -396,13 +405,49 @@ iso/boot/grub/grub.cfg:
 	echo "    boot" >> $@
 	echo "}" >> $@
 
+iso/etc/services/httpd.conf:
+	mkdir -p iso/etc/services
+	echo "# HTTP Daemon Service Configuration" > $@
+	echo "name=httpd" >> $@
+	echo "exec=/dev/httpd" >> $@
+	echo "args=--port 80" >> $@
+	echo "description=HTTP Web Server" >> $@
+	echo "type=daemon" >> $@
+	echo "auto_start=true" >> $@
+	echo "restart_on_fail=false" >> $@
+
+iso/etc/services/network.conf:
+	mkdir -p iso/etc/services
+	echo "# Network Service Configuration" > $@
+	echo "name=network" >> $@
+	echo "exec=/dev/ip" >> $@
+	echo "args=--init" >> $@
+	echo "description=Network Stack Initialization" >> $@
+	echo "type=system" >> $@
+	echo "auto_start=true" >> $@
+	echo "restart_on_fail=true" >> $@
+
+iso/etc/services/README.conf:
+	mkdir -p iso/etc/services
+	echo "# Service Configuration File Format" > $@
+	echo "# Each .conf file represents a service that can be managed by servicectl" >> $@
+	echo "#" >> $@
+	echo "# Available options:" >> $@
+	echo "#   name          - Service name (required)" >> $@
+	echo "#   exec          - Path to executable (required)" >> $@
+	echo "#   args          - Command line arguments" >> $@
+	echo "#   description   - Service description" >> $@
+	echo "#   type          - Service type: daemon, system, or user" >> $@
+	echo "#   auto_start    - true/false: Start service on boot" >> $@
+	echo "#   restart_on_fail - true/false: Restart if service crashes" >> $@
+
 KBD_INC ?= /usr/share/kbd/keymaps/i386/include
 KBD_COMPOSE ?= /usr/share/kbd/keymaps/include
 
-kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill hello.c index.html banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map
-	mkdir -p iso/boot iso/dev iso/lib iso/dev/keys iso/www
+kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill servicectl hello.c index.html banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map iso/etc/services/httpd.conf iso/etc/services/network.conf iso/etc/services/README.conf
+	mkdir -p iso/boot iso/dev iso/lib iso/dev/keys iso/www iso/etc/services
 	cp kernel.bin iso/boot/
-	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill iso/dev/
+	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill servicectl iso/dev/
 	cp hello.c iso/dev/
 	cp index.html iso/www/
 	cp banner_frames/*.bin iso/dev/

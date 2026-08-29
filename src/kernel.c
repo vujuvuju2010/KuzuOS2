@@ -30,13 +30,14 @@ char kernel_cwd[256] = "/";
 #include "banner.h"
 #include "syscall.h"
 #include "internet/netstack.h"
-#include "usb.h" // usb time 
+#include "usb.h" // usb time
 #include "keyboardusb.h"
 #include "keymap_loader.h"
 #include "z_utils.h" // for za printf for bar0 and other ints
 #include "tty.h" // tty
 #include "kuzulib/fs/vfs.h" // for vfs
 #include "fatfs/ff.h"
+#include "service.h" // service manager
 // FPU initialization
 extern void fpu_init(void);
 
@@ -254,6 +255,11 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr) {
     print_color("Loading US keymap...\n", VGA_COLOR_GREEN);
     load_us_keymap();
     
+    // Initialize service manager
+    print("[ "); print_color("..", VGA_COLOR_YELLOW); print(" ] Initializing service manager... "); delay(200);
+    service_manager_init();
+    service_load_all_configs();
+    print_color("OK\n", VGA_COLOR_LIGHT_GREEN);
     
     print_color("\nKuzuOS successfully started!\n", VGA_COLOR_CYAN);
     print_color("Type 'help' for commands.\n\n", VGA_COLOR_LIGHT_GREY);

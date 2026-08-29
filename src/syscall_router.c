@@ -751,6 +751,45 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
             extern int process_kill(uint32_t pid);
             return process_kill(pid);
         }
+        
+        // ==================== Service Management ====================
+        case 1010: {  // SYS_SERVICE_START
+            // Start a service by name
+            const char* name = (const char*)arg1;
+            extern int service_start(const char* name);
+            return service_start(name);
+        }
+        
+        case 1011: {  // SYS_SERVICE_STOP
+            // Stop a service by name
+            const char* name = (const char*)arg1;
+            extern int service_stop(const char* name);
+            return service_stop(name);
+        }
+        
+        case 1012: {  // SYS_SERVICE_RESTART
+            // Restart a service by name
+            const char* name = (const char*)arg1;
+            extern int service_restart(const char* name);
+            return service_restart(name);
+        }
+        
+        case 1013: {  // SYS_SERVICE_STATUS
+            // Get status of a service
+            const char* name = (const char*)arg1;
+            char* buffer = (char*)arg2;
+            int max_len = (int)arg3;
+            extern int service_status(const char* name, char* output, int max_len);
+            return service_status(name, buffer, max_len);
+        }
+        
+        case 1014: {  // SYS_SERVICE_LIST
+            // List all services
+            char* buffer = (char*)arg1;
+            int max_len = (int)arg2;
+            extern int service_list(char* output, int max_len);
+            return service_list(buffer, max_len);
+        }
 
         default:
             // Unknown syscall - try original handler

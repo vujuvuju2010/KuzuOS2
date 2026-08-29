@@ -31,8 +31,9 @@ z_syscall:
 	mov	rsi, r8		; arg4: r8 -> rsi
 	; rdi needs arg5 (which is r9)
 	mov	rdi, r9		; arg5: r9 -> rdi
-	; rbp needs arg6 (which is on stack)
-	mov	rbp, [rsp + 16]	; arg6: stack -> rbp (after 2 pushes = 16 bytes)
+	; rbp needs arg7 (which is on stack)
+	; After 2 pushes (16 bytes) + return address (8 bytes) = 24 bytes
+	mov	rbp, [rsp + 24]	; arg7: stack -> rbp
 	
 	; Execute syscall
 	int	0x80
