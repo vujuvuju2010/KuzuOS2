@@ -71,6 +71,7 @@ struct process {
     // Process type flags
     uint8_t is_shell;      // Is this the shell process?
     uint8_t is_background; // Ctrl+Z moved this to background
+    uint8_t is_service;    // Background service (always schedulable)
     uint8_t needs_irq_restore; // Saved from IRQ; rebuild stack before restore
     uint8_t exit_code;     // Exit code when terminated
     

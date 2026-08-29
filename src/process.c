@@ -170,13 +170,17 @@ uint32_t process_create(char* name, void* entry_point, uint64_t stack_size) {
     // Initialize CPU context
     init_process_context(new_process, entry_point, stack_base, stack_size);
     
-    // Add to process list (at the front)
-    new_process->next = process_list;
-    new_process->prev = 0;
+    // Add to process list (at the END for round-robin fairness)
+    new_process->next = 0;
     if (process_list) {
-        process_list->prev = new_process;
+        struct process* p = process_list;
+        while (p->next) p = p->next;  // Find tail
+        p->next = new_process;
+        new_process->prev = p;
+    } else {
+        process_list = new_process;
+        new_process->prev = 0;
     }
-    process_list = new_process;
     for (int i = 0; i < 64; i++) new_process->fds[i] = 0;
     return new_process->pid;
 }
@@ -361,6 +365,34 @@ void process_schedule() {
         return;
     }
     
+    // First: if there's a SERVICE process that's READY, switch to it immediately
+    // Services have highest priority - they should run 24/7
+    struct process* p = process_list;
+    while (p) {
+        if (p->is_service && p->state == PROCESS_READY && p != current_process) {
+            // Switch to service immediately
+            struct process* from = current_process;
+            current_process = p;
+            p->state = PROCESS_RUNNING;
+            
+            context_save(&from->context);
+            if (current_process == from) {
+                return;
+            }
+            
+            process_prepare_context_restore(p);
+            context_restore(&p->context);
+            return;
+        }
+        p = p->next;
+    }
+    
+    // SERVICE processes should NOT be preemptively switched out
+    // They only yield when they block on I/O
+    if (current_process->is_service && current_process->state == PROCESS_RUNNING) {
+        return;  // Service keeps running
+    }
+    
     // If current process is STOPPED, immediately switch to shell
     if (current_process->state == PROCESS_STOPPED) {
         if (shell_process && shell_process->state == PROCESS_READY) {
@@ -369,34 +401,26 @@ void process_schedule() {
         }
     }
     
-    // SERVICE processes should NEVER be switched out unless blocked
-    // They stay in RUNNING state permanently
-    if (current_process->state == PROCESS_SERVICE) {
-        // Service is running, just return - let it continue
-        return;
-    }
-    
     // If current process is still RUNNING, mark it schedulable again
     if (current_process->state == PROCESS_RUNNING) {
         if (current_process->is_background) {
             current_process->state = PROCESS_BACKGROUND;
-        } else {
+        } else if (!current_process->is_service) {
             current_process->state = PROCESS_READY;
         }
     }
     
-    // Find next ready process
+    // Find next ready process (round-robin for non-service processes)
     struct process* next = current_process->next;
     if (!next) {
         next = process_list;
     }
     
-    // Look for ready/background/service process
+    // Look for ready/background process
     struct process* start = next;
     while (next != current_process) {
         if (next && (next->state == PROCESS_READY ||
-                     next->state == PROCESS_BACKGROUND ||
-                     next->state == PROCESS_SERVICE)) {
+                     next->state == PROCESS_BACKGROUND)) {
             struct process* from = current_process;
             current_process = next;
             next->state = PROCESS_RUNNING;

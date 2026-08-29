@@ -84,6 +84,48 @@ const char* service_state_name(int state) {
     return service_state_names[state];
 }
 
+// Initialize a service log buffer
+static void service_log_init(struct service_log* log) {
+    for (int i = 0; i < SERVICE_LOG_LINES; i++) {
+        log->lines[i][0] = '\0';
+    }
+    log->head = 0;
+    log->count = 0;
+}
+
+// Add a log entry to a service's log buffer
+void service_log_add(struct service* svc, const char* message) {
+    if (!svc || !message) return;
+    
+    struct service_log* log = &svc->log;
+    int idx = log->head;
+    
+    // Copy message (truncate if too long)
+    int i = 0;
+    while (i < SERVICE_LOG_LINE_LEN - 1 && message[i]) {
+        log->lines[idx][i] = message[i];
+        i++;
+    }
+    log->lines[idx][i] = '\0';
+    
+    // Update head and count
+    log->head = (log->head + 1) % SERVICE_LOG_LINES;
+    if (log->count < SERVICE_LOG_LINES) {
+        log->count++;
+    }
+}
+
+// Get log entry by index (0 = oldest, count-1 = newest)
+const char* service_log_get(struct service* svc, int index) {
+    if (!svc || index < 0 || index >= svc->log.count) {
+        return "";
+    }
+    
+    struct service_log* log = &svc->log;
+    int actual_idx = (log->head - log->count + index + SERVICE_LOG_LINES) % SERVICE_LOG_LINES;
+    return log->lines[actual_idx];
+}
+
 // Helper: skip whitespace
 static char* skip_whitespace(char* s) {
     while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') {
@@ -427,7 +469,17 @@ int service_start(const char* name) {
     // Store the PID and mark as running
     svc->config.pid = pid;
     svc->state = SERVICE_RUNNING;
-    svc->start_time = 0;
+    
+    // Get current time (simple tick counter for now)
+    extern uint64_t get_uptime_ms(void);
+    svc->start_time = get_uptime_ms();
+    svc->stop_time = 0;
+    svc->exit_code = 0;
+    svc->restart_count = 0;
+    
+    // Initialize log buffer and add start message
+    service_log_init(&svc->log);
+    service_log_add(svc, "Service started");
     
     svc_printf("service: '");
     svc_printf(name);
@@ -516,7 +568,7 @@ static char* simple_strcpy(char* dest, const char* src, int max) {
     return dest;
 }
 
-// Get status of a service - simplified
+// Get status of a service - systemd-style output
 int service_status(const char* name, char* output, int max_len) {
     if (!name || !output || max_len <= 0) {
         return -1;
@@ -533,21 +585,81 @@ int service_status(const char* name, char* output, int max_len) {
     }
     
     int offset = 0;
-    simple_strcpy(output + offset, "Service: ", max_len - offset);
+    
+    // ● httpd - HTTP Web Server
+    simple_strcpy(output + offset, "\xe2\x97\x8f ", max_len - offset);  // Unicode bullet
     offset = svc_strlen(output);
     simple_strcpy(output + offset, svc->config.name, max_len - offset);
     offset = svc_strlen(output);
-    simple_strcpy(output + offset, "\n  State: ", max_len - offset);
+    if (svc->config.description[0]) {
+        simple_strcpy(output + offset, " - ", max_len - offset);
+        offset = svc_strlen(output);
+        simple_strcpy(output + offset, svc->config.description, max_len - offset);
+        offset = svc_strlen(output);
+    }
+    simple_strcpy(output + offset, "\n", max_len - offset);
     offset = svc_strlen(output);
-    simple_strcpy(output + offset, service_state_name(svc->state), max_len - offset);
+    
+    // Active: running
+    simple_strcpy(output + offset, "   Active: ", max_len - offset);
     offset = svc_strlen(output);
-    simple_strcpy(output + offset, "\n  PID: ", max_len - offset);
+    if (svc->state == SERVICE_RUNNING) {
+        simple_strcpy(output + offset, "running", max_len - offset);
+    } else if (svc->state == SERVICE_STOPPED) {
+        simple_strcpy(output + offset, "stopped", max_len - offset);
+    } else {
+        simple_strcpy(output + offset, service_state_name(svc->state), max_len - offset);
+    }
+    offset = svc_strlen(output);
+    simple_strcpy(output + offset, "\n", max_len - offset);
+    offset = svc_strlen(output);
+    
+    // Main PID: xxx
+    simple_strcpy(output + offset, "   Main PID: ", max_len - offset);
     offset = svc_strlen(output);
     char pbuf[16];
     svc_itoa(svc->config.pid, pbuf, sizeof(pbuf));
     simple_strcpy(output + offset, pbuf, max_len - offset);
     offset = svc_strlen(output);
     simple_strcpy(output + offset, "\n", max_len - offset);
+    offset = svc_strlen(output);
+    
+    // Restart count
+    simple_strcpy(output + offset, "   Restart count: ", max_len - offset);
+    offset = svc_strlen(output);
+    svc_itoa(svc->restart_count, pbuf, sizeof(pbuf));
+    simple_strcpy(output + offset, pbuf, max_len - offset);
+    offset = svc_strlen(output);
+    simple_strcpy(output + offset, "\n", max_len - offset);
+    offset = svc_strlen(output);
+    
+    // Logs section
+    simple_strcpy(output + offset, "\n", max_len - offset);
+    offset = svc_strlen(output);
+    simple_strcpy(output + offset, "   Logs:\n", max_len - offset);
+    offset = svc_strlen(output);
+    
+    // Show last 4 log entries (or fewer if not available)
+    int log_count = svc->log.count;
+    int start_idx = 0;
+    if (log_count > 4) {
+        start_idx = log_count - 4;
+    }
+    
+    for (int i = start_idx; i < log_count; i++) {
+        const char* log_line = service_log_get(svc, i);
+        simple_strcpy(output + offset, "      ", max_len - offset);
+        offset = svc_strlen(output);
+        simple_strcpy(output + offset, log_line, max_len - offset);
+        offset = svc_strlen(output);
+        simple_strcpy(output + offset, "\n", max_len - offset);
+        offset = svc_strlen(output);
+    }
+    
+    if (log_count == 0) {
+        simple_strcpy(output + offset, "      (no log entries)\n", max_len - offset);
+        offset = svc_strlen(output);
+    }
     
     return 0;
 }

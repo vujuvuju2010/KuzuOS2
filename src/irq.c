@@ -98,6 +98,11 @@ uint32_t timer_get_ticks(void) {
     return timer_ticks;
 }
 
+// Get uptime in milliseconds (timer runs at 100Hz, so each tick is 10ms)
+uint64_t get_uptime_ms(void) {
+    return (uint64_t)timer_ticks * 10;
+}
+
 void process_handle_ctrl_z(struct regs* r) {
     extern volatile int ctrl_z_pressed;
     extern struct process* shell_process;

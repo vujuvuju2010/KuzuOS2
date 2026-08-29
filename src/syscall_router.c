@@ -7,6 +7,7 @@
 #include "filesystem.h"
 #include "memory.h"
 #include "process.h"
+#include "service.h"
 
 #ifndef NULL
 #define NULL ((void*)0)
@@ -811,6 +812,7 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
             extern int service_list(char* output, int max_len);
             return service_list(buffer, max_len);
         }
+        
 
         default:
             // Unknown syscall - try original handler

@@ -40,6 +40,16 @@ struct service_config {
     int pid;                               // PID of running service (0 if not running)
 };
 
+// Service log buffer (circular buffer for last messages)
+#define SERVICE_LOG_LINES 8
+#define SERVICE_LOG_LINE_LEN 128
+
+struct service_log {
+    char lines[SERVICE_LOG_LINES][SERVICE_LOG_LINE_LEN];
+    int head;                              // Index of newest entry
+    int count;                             // Number of entries (0 to SERVICE_LOG_LINES)
+};
+
 // Service runtime structure
 struct service {
     struct service_config config;          // Configuration from .conf file
@@ -48,6 +58,8 @@ struct service {
     uint64_t stop_time;                    // When service was stopped
     int exit_code;                         // Exit code if stopped/failed
     int restart_count;                     // Number of restarts
+    struct service_log log;                // Log buffer for service output
+    int log_capture_enabled;               // 1 if we should capture output from this service
 };
 
 // Service manager structure
