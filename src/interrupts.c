@@ -133,35 +133,40 @@ void isr_handler(struct regs* r)
         };
 
         // Special case: Invalid Opcode (INT 06) - terminate process via syscall
+        // This happens when a user program executes an invalid instruction or returns from exit
         if (r->int_no == 6) {
             print_color("INT 06: Invalid Opcode - terminating process\n", VGA_COLOR_YELLOW);
             print("  RIP=0x"); print_hex64(r->rip); print("\n");
 
-            uint8_t* opcode_ptr = (uint8_t*)r->rip;
-            print("  Opcode bytes: ");
-            for (int i = 0; i < 8; i++) {
-                uint8_t byte = opcode_ptr[i];
-                char hex[3];
-                hex[0] = "0123456789ABCDEF"[byte >> 4];
-                hex[1] = "0123456789ABCDEF"[byte & 0xF];
-                hex[2] = ' ';
-                print(hex);
+            // Check if we're in user mode (CPL=3)
+            if (r->cs & 3) {
+                // User mode - terminate the process cleanly
+                extern struct process* current_process;
+                if (current_process) {
+                    print("  Terminating process: ");
+                    print(current_process->name);
+                    print(" (PID=");
+                    {
+                        char buf[16];
+                        int n = current_process->pid, idx = 0;
+                        if (n == 0) buf[idx++] = '0';
+                        while (n > 0) { buf[idx++] = '0' + (n % 10); n /= 10; }
+                        for (int i = 0; i < idx/2; i++) { char t = buf[i]; buf[i] = buf[idx-1-i]; buf[idx-1-i] = t; }
+                        buf[idx] = 0;
+                        print(buf);
+                    }
+                    print(")\n");
+                    
+                    // Call process_exit_current directly (kernel context)
+                    extern void process_exit_current(int exit_code);
+                    process_exit_current(1);
+                    // Should not return here
+                }
             }
-            print("\n");
-
-            // SYS_EXIT via int 0x80, args in rax/rbx per this kernel's own
-            // ABI (NOT the Linux x86_64 syscall/rdi convention -- this
-            // kernel still dispatches through isr128 using ebx/ecx/edx/etc,
-            // see handle_syscall_extended call below)
-            asm volatile(
-                "movq $1, %%rax\n"   // SYS_EXIT
-                "movq $1, %%rbx\n"   // exit code 1
-                "int $0x80\n"
-                :
-                :
-                : "rax", "rbx"
-            );
-            return;
+            
+            // If we reach here, something went wrong - halt
+            print_color("SYSTEM HALTED\n", VGA_COLOR_LIGHT_RED);
+            while (1) asm volatile("cli; hlt");
         }
 
         print_color(" ", VGA_COLOR_LIGHT_RED);

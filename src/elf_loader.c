@@ -270,12 +270,16 @@ void z_entry(unsigned long *sp, void (*fini)(void))
         ++av;
 
         /* Legacy z_start layout: argv[0]=prog, argv[1]=path — drop argv[0].
-         * Kernel execve layout: argv is already [prog][args...]; do not shift. */
+         * Kernel execve layout: argv is already [prog][args...]; do not shift.
+         * For KuzuOS2 service manager, we keep argv as-is since shell passes it correctly. */
+        /* Disabled argv shift - loader_kernel.c already sets up argv correctly */
+        /*
         if (!(current_process && current_process->elf_filename_ptr)) {
                 z_memcpy(&argv[0], &argv[1],
                          (unsigned long)av - (unsigned long)&argv[1]);
                 (*sp)--;
         }
+        */
 
         {
                 unsigned long target = (elf_interp ? entry[Z_INTERP] : entry[Z_PROG]);

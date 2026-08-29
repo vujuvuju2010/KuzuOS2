@@ -220,6 +220,27 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
     // Then add new ones here
     
     switch (syscall_num) {
+        // ==================== Process Exit ====================
+        case SYS_EXIT: {
+            // void exit(int status)
+            extern struct process* current_process;
+            if (current_process) {
+                extern void process_exit_current(int exit_code);
+                process_exit_current((int)arg1);
+            }
+            return 0;
+        }
+        
+        case SYS_EXIT_GROUP: {
+            // void exit_group(int status) - exit all threads in process
+            extern struct process* current_process;
+            if (current_process) {
+                extern void process_exit_current(int exit_code);
+                process_exit_current((int)arg1);
+            }
+            return 0;
+        }
+        
         // ==================== File Descriptors ====================
         case SYS_DUP: {
             // int dup(int oldfd) - not yet implemented
