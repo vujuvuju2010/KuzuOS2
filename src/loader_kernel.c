@@ -11,6 +11,9 @@
 // Forward declare z_memcpy
 extern void* z_memcpy(void* dest, const void* src, size_t n);
 
+// Forward declaration for affinity-based background loading
+int elf_load_and_create_background_with_affinity(const char* filename, char* const argv[], uint32_t* pid_out, int high_priority, int cpu_core);
+
 // File handle structure for kernel
 typedef struct {
     char* filename;
@@ -644,6 +647,13 @@ exec_foreground_return:
 // Load ELF and create a background process (for services)
 // Unlike elf_load_and_execve, this doesn't switch to the new process
 int elf_load_and_create_background(const char* filename, char* const argv[], uint32_t* pid_out) {
+    return elf_load_and_create_background_with_affinity(filename, argv, pid_out, 0, -1);
+}
+
+// Load ELF and create a background process with CPU affinity (for high-priority services)
+// high_priority: 1 = high priority process that should run on dedicated core
+// cpu_core: specific core ID (-1 = any core, 0-N = specific core)
+int elf_load_and_create_background_with_affinity(const char* filename, char* const argv[], uint32_t* pid_out, int high_priority, int cpu_core) {
     // Count argc
     int argc = 0;
     if (argv) {
@@ -682,11 +692,11 @@ int elf_load_and_create_background(const char* filename, char* const argv[], uin
     while (base[ni] && ni < 31) { proc_name[ni] = base[ni]; ni++; }
     proc_name[ni] = '\0';
 
-    // Create process
-    extern uint32_t process_create(char* name, void* entry_point, uint64_t stack_size);
+    // Create process with cpu_affinity_create
+    extern uint32_t process_create_with_affinity(char* name, void* entry_point, uint64_t stack_size, int high_priority, int cpu_core);
     extern struct process* process_find(uint32_t pid);
 
-    uint32_t pid = process_create(proc_name, (void*)elf_process_wrapper, 16384);
+    uint32_t pid = process_create_with_affinity(proc_name, (void*)elf_process_wrapper, 16384, high_priority, cpu_core);
     if (!pid) {
         print_color("[elf_load_background] process_create failed\n", VGA_COLOR_LIGHT_RED);
         kfree(filename_copy);
@@ -712,16 +722,18 @@ int elf_load_and_create_background(const char* filename, char* const argv[], uin
     for (int i = 0; i < blob_pos && i < 511; i++) proc->exec_argv_data[i] = argv_blob[i];
     for (int i = 0; i < argc && i < 32; i++) proc->exec_argv_offsets[i] = argv_offsets[i];
 
-    // Mark process as READY so it can be scheduled by process_schedule()
-    // Services will become RUNNING when they're actually scheduled
-    proc->state = PROCESS_READY;
+    // Mark process as RUNNING - services yield voluntarily via SYS_YIELD
+    // They don't participate in round-robin scheduling
+    proc->state = PROCESS_RUNNING;
     proc->is_service = 1;
+    proc->is_background = 0;  // NOT a background process - services are different
 
     // Return the PID
     *pid_out = pid;
     
-    // Yield to let the scheduler pick the new service to run
-    process_yield();
+    // DO NOT yield here - let servicectl continue and exit normally
+    // Service will stay RUNNING but won't execute until servicectl exits
+    // and yields via SYS_YIELD in httpd's main loop
     
     print_color("[elf_load_background] created background process '", VGA_COLOR_LIGHT_GREEN);
     print_color(proc_name, VGA_COLOR_LIGHT_GREEN);

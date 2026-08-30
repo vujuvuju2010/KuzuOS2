@@ -82,8 +82,8 @@ void irq_handler(struct regs* r) {
             process_yield_background();
         }
         
-        // Services yield voluntarily via SYS_YIELD in their main loop
-        // Let normal scheduling happen - don't block here
+        // DO NOT call process_schedule() here - services yield voluntarily via SYS_YIELD
+        // Round-robin scheduling would interfere with service execution
     }
     
     // Keyboard interrupt (IRQ 1) - handle keyboard input directly

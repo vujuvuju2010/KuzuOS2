@@ -4,6 +4,7 @@
 #include "kuzulib/fs/vfs.h"
 #include "interrupts.h"
 #include "irq.h"
+#include "smp.h"
 
 #define MAX_PROCESSES 256
 #define DEFAULT_STACK_SIZE 16384  // 16KB default stack
@@ -127,6 +128,13 @@ void process_suspend_self() {
 }
 
 uint32_t process_create(char* name, void* entry_point, uint64_t stack_size) {
+    return process_create_with_affinity(name, entry_point, stack_size, 0, -1);
+}
+
+// Create process with CPU affinity
+// high_priority: 1 = high priority process (gets dedicated core)
+// cpu_core: specific core ID (-1 = any core, 0-N = specific core)
+uint32_t process_create_with_affinity(char* name, void* entry_point, uint64_t stack_size, int high_priority, int cpu_core) {
     if (next_pid >= MAX_PROCESSES) {
         return 0; // Process limit reached
     }
@@ -161,6 +169,21 @@ uint32_t process_create(char* name, void* entry_point, uint64_t stack_size) {
     new_process->elf_filename_ptr = 0;  // No filename initially
     new_process->cmd_args[0] = '\0';    // No command args initially
     strcpy(new_process->name, name);
+    
+    // Set CPU affinity
+    new_process->is_high_priority = (uint8_t)high_priority;
+    if (cpu_core < 0 || cpu_core > 255) {
+        new_process->cpu_affinity = 0xFF;  // 0xFF = any core
+    } else {
+        new_process->cpu_affinity = (uint8_t)cpu_core;
+    }
+    
+    // If high priority, assign to a dedicated CPU core
+    if (high_priority) {
+        high_priority_process_init(new_process);
+    } else if (cpu_core >= 0 && cpu_core < MAX_CPU_CORES) {
+        process_assign_to_cpu(new_process, (uint32_t)cpu_core);
+    }
     
     // Initialize heap (no pre-allocation, allocate on-demand via brk)
     new_process->heap_start = 0;  // Will be set on first brk call
@@ -360,8 +383,9 @@ void context_switch(struct process* from, struct process* to) {
     context_restore(&to->context);
 }
 
-// Schedule next process (round-robin)
+// Schedule next process (round-robin with CPU affinity support)
 // All processes participate equally in round-robin scheduling
+// High priority processes on dedicated cores are scheduled first
 void process_schedule() {
     if (!current_process || !process_list) {
         return;
@@ -375,8 +399,9 @@ void process_schedule() {
         }
     }
     
-    // All processes become READY when they yield
-    if (current_process->state == PROCESS_RUNNING) {
+    // Services stay RUNNING - they yield voluntarily via SYS_YIELD
+    // Non-service processes become READY/BACKGROUND when they yield
+    if (current_process->state == PROCESS_RUNNING && !current_process->is_service) {
         if (current_process->is_background) {
             current_process->state = PROCESS_BACKGROUND;
         } else {
@@ -384,32 +409,93 @@ void process_schedule() {
         }
     }
     
-    struct process* next = current_process->next;
-    if (!next) {
-        next = process_list;
-    }
-    
-    struct process* start = next;
-    
-    // Look for READY or BACKGROUND processes
-    while (next != current_process) {
-        if (next && (next->state == PROCESS_READY || next->state == PROCESS_BACKGROUND)) {
+    // First, check if there are any high priority processes that need to run
+    // High priority processes should run on their dedicated cores
+    struct process* p = process_list;
+    while (p) {
+        if (p->is_high_priority && p->state == PROCESS_READY && p != current_process) {
+            // Found a high priority process that's ready to run
             struct process* from = current_process;
-            current_process = next;
-            next->state = PROCESS_RUNNING;
+            current_process = p;
+            p->state = PROCESS_RUNNING;
 
             context_save(&from->context);
             if (current_process == from) {
                 return;
             }
 
-            process_prepare_context_restore(next);
-            context_restore(&next->context);
+            process_prepare_context_restore(p);
+            context_restore(&p->context);
             return;
+        }
+        p = p->next;
+    }
+    
+    // For processes with CPU affinity, try to schedule on the same "logical" core
+    // (In single-core emulation, we just respect the affinity flag for prioritization)
+    uint8_t current_cpu_affinity = current_process->cpu_affinity;
+    
+    struct process* next = current_process->next;
+    if (!next) {
+        next = process_list;
+    }
+    
+    struct process* start = next;
+    struct process* affinity_match = 0;  // Process with matching CPU affinity
+    
+    // Look for READY or BACKGROUND processes (but NOT services)
+    // Services yield voluntarily via SYS_YIELD - they don't use round-robin
+    while (next != current_process) {
+        if (next && (next->state == PROCESS_READY || next->state == PROCESS_BACKGROUND)) {
+            // Skip services - they yield voluntarily, not via round-robin
+            if (next->is_service) {
+                next = next->next;
+                if (!next) next = process_list;
+                if (next == start) break;
+                continue;
+            }
+            
+            // Track if we find a process with matching CPU affinity
+            if (next->cpu_affinity != 0xFF &&
+                (current_cpu_affinity == 0xFF || next->cpu_affinity == current_cpu_affinity)) {
+                affinity_match = next;
+            }
+            
+            // Use first ready process if no affinity match found yet
+            if (!affinity_match) {
+                struct process* from = current_process;
+                current_process = next;
+                next->state = PROCESS_RUNNING;
+
+                context_save(&from->context);
+                if (current_process == from) {
+                    return;
+                }
+
+                process_prepare_context_restore(next);
+                context_restore(&next->context);
+                return;
+            }
         }
         next = next->next;
         if (!next) next = process_list;
         if (next == start) break;
+    }
+    
+    // If we found an affinity match, use it
+    if (affinity_match) {
+        struct process* from = current_process;
+        current_process = affinity_match;
+        affinity_match->state = PROCESS_RUNNING;
+
+        context_save(&from->context);
+        if (current_process == from) {
+            return;
+        }
+
+        process_prepare_context_restore(affinity_match);
+        context_restore(&affinity_match->context);
+        return;
     }
     
     // No other ready processes - stay with current
@@ -422,7 +508,9 @@ void process_schedule() {
 int process_has_background(void) {
     struct process* p = process_list;
     while (p) {
-        if (p->state == PROCESS_BACKGROUND) {
+        // Only count non-service background processes (Ctrl+Z jobs)
+        // Services have their own scheduling mechanism
+        if (p->state == PROCESS_BACKGROUND && !p->is_service) {
             return 1;
         }
         p = p->next;
@@ -608,50 +696,61 @@ void process_exit_current(int exit_code) {
             __asm__ volatile("cli; hlt");
         }
     } else {
-        // Find any ready process
+        // Find any ready process (prefer shell if available)
         struct process* next = process_list;
-        while (next) {
-            if (next->state == PROCESS_READY && next != exiting) {
-                next->state = PROCESS_RUNNING;
-                current_process = next;
-                
-                // Free the exiting process's stack now
-                if (stack_to_free) {
-                    kfree((void*)stack_to_free);
+        
+        // First try to find shell process
+        if (shell_process && shell_process->state == PROCESS_READY && shell_process != exiting) {
+            next = shell_process;
+        } else {
+            // Otherwise find any READY process
+            while (next) {
+                if (next->state == PROCESS_READY && next != exiting) {
+                    break;
                 }
-                
-                // Free the process structure
-                kfree(to_free);
-                
-                // CRITICAL: Re-initialize keyboard before restoring context
-                extern void keyboard_init(void);
-                keyboard_init();
-                
-                // CRITICAL: Ensure PIC has both timer and keyboard unmasked
-                {
-                    uint8_t mask;
-                    __asm__ volatile("inb $0x21, %0" : "=a"(mask));
-                    mask &= ~0x03;  // Unmask IRQ0 (timer) and IRQ1 (keyboard)
-                    __asm__ volatile("outb %0, $0x21" : : "a"(mask));
-                }
-                
-                // Send EOI to ensure PIC is ready
-                __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0xA0));
-                __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0x20));
-                
-                // Enable interrupts globally
-                __asm__ volatile("sti");
-                
-                // Restore next process context - this will jump and never return
-                context_restore(&next->context);
-                
-                // Should never reach here
-                print_color("\n[Error: context_restore returned unexpectedly]\n", VGA_COLOR_LIGHT_RED);
-                while (1) {
-                    __asm__ volatile("cli; hlt");
-                }
+                next = next->next;
             }
-            next = next->next;
+        }
+        
+        if (next) {
+            next->state = PROCESS_RUNNING;
+            current_process = next;
+            
+            // Free the exiting process's stack now
+            if (stack_to_free) {
+                kfree((void*)stack_to_free);
+            }
+            
+            // Free the process structure
+            kfree(to_free);
+            
+            // CRITICAL: Re-initialize keyboard before restoring context
+            extern void keyboard_init(void);
+            keyboard_init();
+            
+            // CRITICAL: Ensure PIC has both timer and keyboard unmasked
+            {
+                uint8_t mask;
+                __asm__ volatile("inb $0x21, %0" : "=a"(mask));
+                mask &= ~0x03;  // Unmask IRQ0 (timer) and IRQ1 (keyboard)
+                __asm__ volatile("outb %0, $0x21" : : "a"(mask));
+            }
+            
+            // Send EOI to ensure PIC is ready
+            __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0xA0));
+            __asm__ volatile("outb %%al, %%dx" : : "a"(0x20), "d"(0x20));
+            
+            // Enable interrupts globally
+            __asm__ volatile("sti");
+            
+            // Restore next process context - this will jump and never return
+            context_restore(&next->context);
+            
+            // Should never reach here
+            print_color("\n[Error: context_restore returned unexpectedly]\n", VGA_COLOR_LIGHT_RED);
+            while (1) {
+                __asm__ volatile("cli; hlt");
+            }
         }
         
         // No processes left - free resources and halt system
@@ -862,4 +961,21 @@ int process_get_list(struct process** out_list, int max_count) {
         p = p->next;
     }
     return count;
-} 
+}
+
+// Set CPU affinity for a process
+void process_set_affinity(uint32_t pid, uint8_t cpu_core) {
+    struct process* p = process_find(pid);
+    if (p) {
+        p->cpu_affinity = cpu_core;
+    }
+}
+
+// Get CPU affinity for a process
+uint8_t process_get_affinity(uint32_t pid) {
+    struct process* p = process_find(pid);
+    if (p) {
+        return p->cpu_affinity;
+    }
+    return 0xFF;  // Return "any core" if process not found
+}

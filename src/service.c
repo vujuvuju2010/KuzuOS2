@@ -212,6 +212,8 @@ int service_load_config(const char* path) {
     svc->config.auto_start = 0;
     svc->config.restart_on_fail = 0;
     svc->config.type = SERVICE_TYPE_USER;
+    svc->config.high_priority = 0;
+    svc->config.cpu_core = -1;  // -1 = any core
     svc_strncpy(svc->config.name, "unknown", SERVICE_NAME_MAX);
     
     // Read the config file content
@@ -261,6 +263,32 @@ int service_load_config(const char* path) {
                 svc->config.restart_on_fail = (svc_strcmp(value, "true") == 0 ||
                                               svc_strcmp(value, "1") == 0 ||
                                               svc_strcmp(value, "yes") == 0);
+            } else if (svc_strcmp(key, "high_priority") == 0) {
+                svc->config.high_priority = (svc_strcmp(value, "true") == 0 ||
+                                            svc_strcmp(value, "1") == 0 ||
+                                            svc_strcmp(value, "yes") == 0);
+            } else if (svc_strcmp(key, "cpu_core") == 0) {
+                // Parse cpu_core as integer (may be -1 for "any core")
+                int core = 0;
+                int negative = 0;
+                int i = 0;
+                
+                // Check for negative sign
+                if (value[0] == '-') {
+                    negative = 1;
+                    i = 1;
+                }
+                
+                while (value[i] >= '0' && value[i] <= '9') {
+                    core = core * 10 + (value[i] - '0');
+                    i++;
+                }
+                
+                if (negative) {
+                    svc->config.cpu_core = -core;
+                } else {
+                    svc->config.cpu_core = core;
+                }
             }
         }
     }
@@ -453,10 +481,10 @@ int service_start(const char* name) {
     
     // Create process directly without using execve (which is for foreground)
     // We need to call the internal loader function for background processes
-    extern int elf_load_and_create_background(const char* filename, char* const argv[], uint32_t* pid_out);
+    extern int elf_load_and_create_background_with_affinity(const char* filename, char* const argv[], uint32_t* pid_out, int high_priority, int cpu_core);
     
     uint32_t pid = 0;
-    int result = elf_load_and_create_background(svc->config.exec_path, argv, &pid);
+    int result = elf_load_and_create_background_with_affinity(svc->config.exec_path, argv, &pid, svc->config.high_priority, svc->config.cpu_core);
     
     if (result < 0 || pid == 0) {
         svc_printf("service: failed to start '");

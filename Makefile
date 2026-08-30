@@ -19,7 +19,7 @@ kernel.bin: boot.o kernel.o usb.o usbmsc.o keyboardusb.o vfs.o tty.o memory.o pm
             context_switch.o elf_loader.o \
             z_printf.o z_utils.o z_err.o z_trampo.o \
             net.o e1000.o ethernet.o arp.o net_ip.o tcp.o udp.o dns.o \
-            keymap_loader.o service.o
+            keymap_loader.o service.o smp.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 # --------------------------------------------------------------------
@@ -140,6 +140,9 @@ z_err.o: src/kuzulib/stdio/z_err.c
 
 
 service.o: src/service.c src/service.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+smp.o: src/smp.c src/smp.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # --------------------------------------------------------------------
@@ -415,6 +418,8 @@ iso/etc/services/httpd.conf:
 	echo "type=daemon" >> $@
 	echo "auto_start=true" >> $@
 	echo "restart_on_fail=false" >> $@
+	echo "high_priority=true" >> $@
+	echo "cpu_core=1" >> $@
 
 iso/etc/services/network.conf:
 	mkdir -p iso/etc/services

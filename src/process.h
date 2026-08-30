@@ -75,6 +75,10 @@ struct process {
     uint8_t needs_irq_restore; // Saved from IRQ; rebuild stack before restore
     uint8_t exit_code;     // Exit code when terminated
     
+    // CPU affinity for multi-core scheduling
+    uint8_t cpu_affinity;  // CPU core ID this process should run on (0xFF = any core)
+    uint8_t is_high_priority; // 1 = high priority process (gets dedicated core)
+    
     // ELF execution data (for passing arguments to wrapper)
     void* elf_filename_ptr;  // Pointer to filename string for ELF processes
     char  cmd_args[256];     // Command-line arguments for this process (set at exec)
@@ -100,6 +104,7 @@ int strlen(const char* str);
 // Process management fonksiyonları
 void process_init();
 uint32_t process_create(char* name, void* entry_point, uint64_t stack_size);
+uint32_t process_create_with_affinity(char* name, void* entry_point, uint64_t stack_size, int high_priority, int cpu_core);
 uint32_t process_create_shell();
 void process_schedule();
 void process_yield();
@@ -117,6 +122,10 @@ int process_may_use_console(void);
 int process_count();
 int process_get_list(struct process** out_list, int max_count);
 struct process* process_find(uint32_t pid);
+
+// CPU affinity functions
+void process_set_affinity(uint32_t pid, uint8_t cpu_core);
+uint8_t process_get_affinity(uint32_t pid);
 
 // Context initialization
 void init_process_context(struct process* proc, void* entry_point, uint64_t stack_base, uint64_t stack_size);

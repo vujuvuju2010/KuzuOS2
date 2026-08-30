@@ -38,6 +38,10 @@ struct service_config {
     int auto_start;                        // 1 = start at boot, 0 = manual
     int restart_on_fail;                   // 1 = auto-restart on failure
     int pid;                               // PID of running service (0 if not running)
+    
+    // CPU affinity configuration for multi-core systems
+    int high_priority;                     // 1 = high priority process (gets dedicated core)
+    int cpu_core;                          // Specific CPU core ID (-1 = any, 0-N = specific core)
 };
 
 // Service log buffer (circular buffer for last messages)

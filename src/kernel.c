@@ -38,6 +38,7 @@ char kernel_cwd[256] = "/";
 #include "kuzulib/fs/vfs.h" // for vfs
 #include "fatfs/ff.h"
 #include "service.h" // service manager
+#include "smp.h" // SMP/multi-core support
 // FPU initialization
 extern void fpu_init(void);
 
@@ -199,6 +200,11 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr) {
     
     // process go brrrrr
     process_init();
+    
+    // Initialize SMP (multi-core) support
+    print("[ "); print_color("..", VGA_COLOR_YELLOW); print(" ] Initializing SMP...     "); delay(200);
+    smp_init();
+    print_color("OK\n", VGA_COLOR_LIGHT_GREEN);
     
     // syscall go brrrr
     syscall_init();
