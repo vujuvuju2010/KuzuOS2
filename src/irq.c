@@ -21,6 +21,9 @@ volatile int bg_schedule_pending = 0;
 volatile int bg_slice_active = 0;
 volatile int bg_slice_end = 0;
 
+// Service scheduling - ensures services get regular CPU time for network polling
+static int service_timer_count = 0;
+
 static void force_schedule_after_irq(struct regs* r);
 
 void irq_handler(struct regs* r) {
@@ -78,6 +81,9 @@ void irq_handler(struct regs* r) {
             extern void process_yield_background(void);
             process_yield_background();
         }
+        
+        // Services yield voluntarily via SYS_YIELD in their main loop
+        // Let normal scheduling happen - don't block here
     }
     
     // Keyboard interrupt (IRQ 1) - handle keyboard input directly

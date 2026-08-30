@@ -470,6 +470,9 @@ int service_start(const char* name) {
     svc->config.pid = pid;
     svc->state = SERVICE_RUNNING;
     
+    // NO yield here - let servicectl finish and exit normally
+    // The service will get CPU time via normal scheduling (see process_schedule)
+    
     // Get current time (simple tick counter for now)
     extern uint64_t get_uptime_ms(void);
     svc->start_time = get_uptime_ms();

@@ -368,8 +368,12 @@ void _start(void) {
     
     // Main server loop
     while (1) {
-        // Poll for network activity
+        // Poll for network activity - this polls the NIC for incoming packets
         syscall1(SYS_NET_POLL, 0);
+        
+        // CRITICAL: Yield after polling to let network stack process incoming packets
+        // This is essential for TCP handshake to complete
+        syscall1(158, 0);  // SYS_YIELD
         
         // Try to accept new connections
         int new_sock = syscall1(SYS_NET_ACCEPT, listen_sock);

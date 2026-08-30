@@ -712,12 +712,16 @@ int elf_load_and_create_background(const char* filename, char* const argv[], uin
     for (int i = 0; i < blob_pos && i < 511; i++) proc->exec_argv_data[i] = argv_blob[i];
     for (int i = 0; i < argc && i < 32; i++) proc->exec_argv_offsets[i] = argv_offsets[i];
 
-    // Mark process as SERVICE - set to READY so scheduler will pick it up
+    // Mark process as READY so it can be scheduled by process_schedule()
+    // Services will become RUNNING when they're actually scheduled
     proc->state = PROCESS_READY;
     proc->is_service = 1;
 
     // Return the PID
     *pid_out = pid;
+    
+    // Yield to let the scheduler pick the new service to run
+    process_yield();
     
     print_color("[elf_load_background] created background process '", VGA_COLOR_LIGHT_GREEN);
     print_color(proc_name, VGA_COLOR_LIGHT_GREEN);

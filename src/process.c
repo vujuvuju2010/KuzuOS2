@@ -339,6 +339,7 @@ void process_end_background_slice(struct regs* r) {
 }
 
 // Switch context between processes
+// All processes become READY when switched away for round-robin scheduling
 void context_switch(struct process* from, struct process* to) {
     if (!from || !to || from == to) {
         return;
@@ -347,7 +348,7 @@ void context_switch(struct process* from, struct process* to) {
     // Save current process context
     context_save(&from->context);
     
-    // Update process states
+    // Update process states - ALL processes become READY when switched away
     from->state = PROCESS_READY;
     to->state = PROCESS_RUNNING;
     
@@ -360,37 +361,10 @@ void context_switch(struct process* from, struct process* to) {
 }
 
 // Schedule next process (round-robin)
+// All processes participate equally in round-robin scheduling
 void process_schedule() {
     if (!current_process || !process_list) {
         return;
-    }
-    
-    // First: if there's a SERVICE process that's READY, switch to it immediately
-    // Services have highest priority - they should run 24/7
-    struct process* p = process_list;
-    while (p) {
-        if (p->is_service && p->state == PROCESS_READY && p != current_process) {
-            // Switch to service immediately
-            struct process* from = current_process;
-            current_process = p;
-            p->state = PROCESS_RUNNING;
-            
-            context_save(&from->context);
-            if (current_process == from) {
-                return;
-            }
-            
-            process_prepare_context_restore(p);
-            context_restore(&p->context);
-            return;
-        }
-        p = p->next;
-    }
-    
-    // SERVICE processes should NOT be preemptively switched out
-    // They only yield when they block on I/O
-    if (current_process->is_service && current_process->state == PROCESS_RUNNING) {
-        return;  // Service keeps running
     }
     
     // If current process is STOPPED, immediately switch to shell
@@ -401,32 +375,30 @@ void process_schedule() {
         }
     }
     
-    // If current process is still RUNNING, mark it schedulable again
+    // All processes become READY when they yield
     if (current_process->state == PROCESS_RUNNING) {
         if (current_process->is_background) {
             current_process->state = PROCESS_BACKGROUND;
-        } else if (!current_process->is_service) {
+        } else {
             current_process->state = PROCESS_READY;
         }
     }
     
-    // Find next ready process (round-robin for non-service processes)
     struct process* next = current_process->next;
     if (!next) {
         next = process_list;
     }
     
-    // Look for ready/background process
     struct process* start = next;
+    
+    // Look for READY or BACKGROUND processes
     while (next != current_process) {
-        if (next && (next->state == PROCESS_READY ||
-                     next->state == PROCESS_BACKGROUND)) {
+        if (next && (next->state == PROCESS_READY || next->state == PROCESS_BACKGROUND)) {
             struct process* from = current_process;
             current_process = next;
             next->state = PROCESS_RUNNING;
 
             context_save(&from->context);
-            // When 'from' is switched back in, land here and stop
             if (current_process == from) {
                 return;
             }
@@ -436,18 +408,13 @@ void process_schedule() {
             return;
         }
         next = next->next;
-        if (!next) {
-            next = process_list;
-        }
-        if (next == start) {
-            break;  // Wrapped around, no ready processes
-        }
+        if (!next) next = process_list;
+        if (next == start) break;
     }
     
-    // No other ready processes, stay with current if it's schedulable
+    // No other ready processes - stay with current
     if (current_process->state == PROCESS_READY ||
-        current_process->state == PROCESS_BACKGROUND ||
-        current_process->state == PROCESS_SERVICE) {
+        current_process->state == PROCESS_BACKGROUND) {
         current_process->state = PROCESS_RUNNING;
     }
 }
@@ -516,8 +483,14 @@ bg_yield_resume:
 }
 
 // Yield CPU to next process
+// For services, this is CRITICAL - they must yield to let the network stack process packets
 void process_yield() {
-    if (current_process && current_process->state == PROCESS_RUNNING) {
+    if (!current_process) {
+        return;
+    }
+    // Allow yielding from both RUNNING and READY states
+    // (services start as READY and yield immediately)
+    if (current_process->state == PROCESS_RUNNING || current_process->state == PROCESS_READY) {
         process_schedule();
     }
 }
