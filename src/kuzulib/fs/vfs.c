@@ -118,15 +118,32 @@ static int console_write(const void *buf, uint32_t len){
 static int console_read(void *buf, uint32_t len){
     char *dst = (char *)buf;
     uint32_t i = 0;
+    
+    // Check if current process is allowed to read from console
+    extern int process_may_use_console(void);
+    if (!process_may_use_console()) {
+        // Background process trying to read stdin - return EOF (0 bytes read)
+        return 0;
+    }
+    
     while(i < len){
         char c = 0;
-        while(c == 0){
+        int attempts = 0;
+        const int MAX_ATTEMPTS = 100;  // Don't block forever
+        
+        while(c == 0 && attempts < MAX_ATTEMPTS){
             keyboard_poll();
             usb_poll();
             c = keyboard_get_char();
             if(c == 0){
+                attempts++;
                 for(volatile int d = 0; d < 1000; d++);
             }
+        }
+        
+        // If no input after MAX_ATTEMPTS, return what we have so far
+        if (c == 0) {
+            break;
         }
         
         /* backspace handling */

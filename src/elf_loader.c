@@ -280,6 +280,9 @@ void z_entry(unsigned long *sp, void (*fini)(void))
 
         {
                 unsigned long target = (elf_interp ? entry[Z_INTERP] : entry[Z_PROG]);
+                extern void z_printf(const char* fmt, ...);
+                z_printf("[JUMP] entry=0x%lx base=0x%lx type=%d\n", 
+                         target, base[Z_PROG], ehdrs[Z_PROG].e_type);
                 z_trampo((void (*)(void))target, sp, z_fini);
         }
         /* Should not reach. */

@@ -16,7 +16,7 @@
 // Standard type definitions
 typedef unsigned int size_t;
 
-//
+//beynim yok
 
 
 #ifndef SYS_ARCH_PRCTL
@@ -49,8 +49,7 @@ static const char* syscall_name(uint64_t num) {
     }
 }
 
-// ================== Filesystem Wrapper Functions ==================
-// These wrap existing filesystem functions with syscall-compatible signatures
+
 
 static int fs_delete_file_wrapper(char* path) {
     return fs_delete_file(path, 0);  // non-recursive delete
@@ -578,12 +577,15 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
             unsigned long nfds = (unsigned long)arg2;
             int timeout = (int)arg3;
             
-            // Simple poll implementation - just return 0 (timeout) for now
-            // This allows event loops to continue without hanging
-            // TODO: Actually check file descriptors for readiness
-            
             if (!fds || nfds == 0) {
-                return 0;  // No fds to poll
+                // No fds to poll - just do the timeout delay
+                if (timeout > 0) {
+                    // Busy wait for the timeout period
+                    for (long i = 0; i < timeout * 10000; i++) {
+                        __asm__ volatile("pause");
+                    }
+                }
+                return 0;
             }
             
             // Clear all revents
@@ -591,9 +593,37 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
                 fds[i].revents = 0;
             }
             
-            // For now, return 0 (timeout) to prevent hanging
-            // A real implementation would check fd readiness
-            return 0;
+            // Check file descriptors for readiness
+            // For now, we check stdin (fd 0) for readability
+            int ready_count = 0;
+            
+            for (unsigned long i = 0; i < nfds; i++) {
+                int fd = fds[i].fd;
+                short events = fds[i].events;
+                
+                // POLLIN = 0x01, POLLOUT = 0x04
+                if (fd >= 0) {
+                    // For now, assume all fds except stdin are ready for their requested operations
+                    // stdin (fd 0) is never ready (no blocking on keyboard)
+                    if (fd == 0) {
+                        fds[i].revents = 0;  // stdin not ready
+                    } else {
+                        // Other fds (files, sockets, etc) - assume ready
+                        fds[i].revents = events & 0x05;  // POLLIN | POLLOUT
+                        if (fds[i].revents) ready_count++;
+                    }
+                }
+            }
+            
+            // If nothing ready and timeout > 0, do a delay
+            if (ready_count == 0 && timeout > 0) {
+                // Busy wait for the timeout period (in milliseconds)
+                for (long i = 0; i < timeout * 10000; i++) {
+                    __asm__ volatile("pause");
+                }
+            }
+            
+            return ready_count;
         }
         
         // ==================== User/Group ====================
@@ -626,7 +656,24 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
         }
         
         case SYS_NANOSLEEP: {
-            // int nanosleep(...) - stub (no sleep, just return)
+            // int nanosleep(const struct timespec *req, struct timespec *rem)
+            struct timespec {
+                long tv_sec;
+                long tv_nsec;
+            };
+            
+            struct timespec* req = (struct timespec*)arg1;
+            if (!req) return -1;
+            
+            // Simple busy-wait implementation
+            // Convert to milliseconds for a rough delay
+            long ms = req->tv_sec * 1000 + req->tv_nsec / 1000000;
+            
+            // Busy wait (not ideal, but works for now)
+            for (long i = 0; i < ms * 10000; i++) {
+                __asm__ volatile("pause");
+            }
+            
             return 0;
         }
         
@@ -646,6 +693,42 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
             void* oldact = (void*)arg3;
             // TODO: implement full signal handling
             return 0;
+        }
+        
+        // ==================== Futex (for threading) ====================
+        case 202: {  // SYS_FUTEX
+            // int futex(int *uaddr, int futex_op, int val, const struct timespec *timeout, int *uaddr2, int val3)
+            int futex_op = (int)arg2;
+            
+            // Stub implementation for single-threaded/cooperative multitasking
+            // In tor's execution mode, mutexes are essentially no-ops
+            // Just return success immediately
+            
+            if (futex_op == 0) {  // FUTEX_WAIT
+                // Return -1 with EAGAIN to tell caller the value changed
+                // This breaks the wait loop in pthread_mutex_lock
+                return -11;  // -EAGAIN
+            } else if (futex_op == 1) {  // FUTEX_WAKE
+                return 1;  // One "thread" woken
+            }
+            
+            return 0;
+        }
+        
+        // ==================== Process Yield / Arch Control ====================
+        case 158: {  // SYS_SCHED_YIELD and SYS_ARCH_PRCTL (conflict - handle both)
+            // Check if this is arch_prctl (has arg2) or sched_yield (no meaningful args)
+            if (arg2 == 0x1001 || arg2 == 0x1002) {
+                // This looks like arch_prctl (ARCH_SET_GS = 0x1001, ARCH_SET_FS = 0x1002)
+                // int arch_prctl(int code, unsigned long addr)
+                // TODO: implement arch_prctl for thread-local storage
+                return 0;
+            } else {
+                // Treat as sched_yield - explicitly yield CPU to other processes
+                extern void process_yield(void);
+                process_yield();
+                return 0;
+            }
         }
         
         // ==================== Misc ==============================
@@ -670,12 +753,6 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
         case SYS_PRCTL: {
             // int prctl(int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
             // TODO: implement prctl
-            return 0;
-        }
-        
-        case SYS_ARCH_PRCTL: {
-            // int arch_prctl(int code, unsigned long addr)
-            // TODO: implement arch_prctl
             return 0;
         }
         

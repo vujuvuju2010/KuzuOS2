@@ -2868,18 +2868,6 @@ size_t rephist_total_alloc(void) {
 }
 
 /* Tor main entry point (restore simple KuzuOS stub for now) */
-int tor_run_main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
-
-    printf("KuzuOS Tor stub starting...\n");
-    printf("This build does not run the full Tor network stack yet.\n");
-    printf("tor_run_main() is a no-op stub that exits immediately.\n");
-
-    /* Return success so _start in tor_main.c can call SYS_EXIT(0). */
-    return 0;
-}
-
 /* ==================== ADDITIONAL CRITICAL TOR IMPLEMENTATIONS ==================== */
 
 /* DNS Resolution */
@@ -3002,16 +2990,9 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex) {
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
     if (!mutex) return -1;
     
+    // In single-threaded/cooperative mode, just mark as unlocked
     mutex->owner_pid = 0;
-    
-    /* Fast path: no waiters */
-    if (__sync_val_compare_and_swap(&mutex->futex, 1, 0) == 1) {
-        return 0;
-    }
-    
-    /* Slow path: wake one waiter */
-    atomic_store(&mutex->futex, 0);
-    futex(&mutex->futex, FUTEX_WAKE, 1, NULL, NULL, 0);
+    mutex->futex = 0;
     return 0;
 }
 
