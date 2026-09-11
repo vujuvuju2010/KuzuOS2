@@ -414,12 +414,8 @@ iso/etc/services/httpd.conf:
 	echo "name=httpd" >> $@
 	echo "exec=/dev/httpd" >> $@
 	echo "args=--port 80" >> $@
-	echo "description=HTTP Web Server" >> $@
-	echo "type=daemon" >> $@
-	echo "auto_start=true" >> $@
-	echo "restart_on_fail=false" >> $@
-	echo "high_priority=true" >> $@
-	echo "cpu_core=1" >> $@
+
+
 
 iso/etc/services/network.conf:
 	mkdir -p iso/etc/services
@@ -446,13 +442,36 @@ iso/etc/services/README.conf:
 	echo "#   auto_start    - true/false: Start service on boot" >> $@
 	echo "#   restart_on_fail - true/false: Restart if service crashes" >> $@
 
+iso/etc/services/tor.conf:
+	mkdir -p iso/etc/services
+	cp tor.conf $@
+
+iso/etc/services/torrc:
+	mkdir -p iso/etc/services
+	cp torrc $@
+
+iso/etc/services/ONION.md:
+	mkdir -p iso/etc/services
+	cp ONION.md $@
+
+iso/etc/services/network.conf:
+	mkdir -p iso/etc/services
+	echo "# Network Service Configuration" > $@
+	echo "name=network" >> $@
+	echo "exec=/dev/ip" >> $@
+	echo "args=--init" >> $@
+	echo "description=Network Stack Initialization" >> $@
+	echo "type=system" >> $@
+	echo "auto_start=true" >> $@
+	echo "restart_on_fail=true" >> $@
+
 KBD_INC ?= /usr/share/kbd/keymaps/i386/include
 KBD_COMPOSE ?= /usr/share/kbd/keymaps/include
 
-kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill servicectl hello.c index.html banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map iso/etc/services/httpd.conf iso/etc/services/network.conf iso/etc/services/README.conf
-	mkdir -p iso/boot iso/dev iso/lib iso/dev/keys iso/www iso/etc/services
+kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd tor loadkeys ps kill servicectl hello.c index.html banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map iso/etc/services/httpd.conf iso/etc/services/network.conf iso/etc/services/README.conf iso/etc/services/tor.conf iso/etc/services/torrc iso/etc/services/ONION.md
+	mkdir -p iso/boot iso/dev iso/lib iso/dev/keys iso/www iso/tor/data iso/tor/hidden_service
 	cp kernel.bin iso/boot/
-	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill servicectl iso/dev/
+	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd tor loadkeys ps kill servicectl iso/dev/
 	cp hello.c iso/dev/
 	cp index.html iso/www/
 	cp banner_frames/*.bin iso/dev/
@@ -470,12 +489,92 @@ kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear 
 # Utilities
 # --------------------------------------------------------------------
 clean:
-	rm -f *.o kernel.bin kuzuos.iso echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping loadkeys ps kill net_ip.o ip_user.o
+	rm -f *.o kernel.bin kuzuos.iso echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd tor loadkeys ps kill net_ip.o ip_user.o
 	rm -f libkuzu.a kuzulib/*.o
 	rm -f /tmp/ctype_stub.c libc_*.o
 	rm -rf iso
 
+# --------------------------------------------------------------------
+# Tor Daemon Build
+# --------------------------------------------------------------------
+TOR_INC = -Isrc/tor_port/tor -Isrc/tor_port/tor/ext -Isrc/tor_port/tor/ext/trunnel -Isrc/tor_port -Isrc/kuzulib/include -Ilibc/include
 
+tor: src/tor_port/tor_main.o src/tor_port/tor/app/main/main.o src/tor_port/tor/app/main/ntmain.o src/tor_port/tor/app/main/shutdown.o src/tor_port/tor/app/main/subsysmgr.o src/tor_port/tor/app/main/risky_options.o src/tor_port/tor/app/main/tor_main.o src/tor_port/tor/app/config/config.o src/tor_port/tor/app/config/statefile.o src/tor_port/tor/app/config/quiet_level.o src/tor_port/tor/lib/lock/compat_mutex.o src/tor_port/tor/lib/thread/compat_threads.o src/tor_port/tor/lib/malloc/malloc.o src/tor_port/tor/lib/log/log.o src/tor_port/tor/lib/log/util_bug.o src/tor_port/tor/lib/string/compat_string.o src/tor_port/tor/lib/string/printf.o src/tor_port/tor/lib/time/compat_time.o src/tor_port/tor/lib/encoding/time_fmt.o src/kuzulib/string/string.o src/kuzulib/stdio/stdio.o src/kuzulib/stdio/z_printf.o src/kuzulib/stdio/z_err.o src/kuzulib/stdlib/malloc.o src/kuzulib/stdlib/arpa_inet.o src/kuzulib/stdlib/pthread_stub.o src/kuzulib/stdlib/unistd.o src/kuzulib/event/event.o src/tor_port/tor_stubs.o
+	$(LD) -m elf_x86_64 -T linker.ld --allow-multiple-definition -o $@ $^
+
+src/tor_port/tor_main.o: src/tor_port/tor_main.c
+	$(CC) $(CFLAGS) -Isrc/tor_port -Isrc/kuzulib/include -c -o $@ $<
+
+src/tor_port/tor/app/main/main.o: src/tor_port/tor/app/main/main.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/lib/lock/compat_mutex.o: src/tor_port/tor/lib/lock/compat_mutex.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/lib/thread/compat_threads.o: src/tor_port/tor/lib/thread/compat_threads.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/lib/malloc/malloc.o: src/tor_port/tor/lib/malloc/malloc.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/lib/log/log.o: src/tor_port/tor/lib/log/log.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/lib/log/util_bug.o: src/tor_port/tor/lib/log/util_bug.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/lib/string/compat_string.o: src/tor_port/tor/lib/string/compat_string.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/lib/string/printf.o: src/tor_port/tor/lib/string/printf.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/lib/time/compat_time.o: src/tor_port/tor/lib/time/compat_time.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/lib/encoding/time_fmt.o: src/tor_port/tor/lib/encoding/time_fmt.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+ 
+src/tor_port/tor/app/main/ntmain.o: src/tor_port/tor/app/main/ntmain.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/app/main/tor_main.o: src/tor_port/tor/app/main/tor_main.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/app/main/shutdown.o: src/tor_port/tor/app/main/shutdown.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/app/main/subsysmgr.o: src/tor_port/tor/app/main/subsysmgr.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/app/main/risky_options.o: src/tor_port/tor/app/main/risky_options.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/app/config/config.o: src/tor_port/tor/app/config/config.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor/app/config/statefile.o: src/tor_port/tor/app/config/statefile.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+src/tor_port/tor/app/config/quiet_level.o: src/tor_port/tor/app/config/quiet_level.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/kuzulib/stdlib/pthread_stub.o: src/kuzulib/stdlib/pthread_stub.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/kuzulib/stdlib/unistd.o: src/kuzulib/stdlib/unistd.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/kuzulib/event/event.o: src/kuzulib/event/event.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/kuzulib/string/string.o: src/kuzulib/string/string.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/kuzulib/stdlib/arpa_inet.o: src/kuzulib/stdlib/arpa_inet.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
+
+src/tor_port/tor_stubs.o: src/tor_port/tor_stubs.c
+	$(CC) $(CFLAGS) $(TOR_INC) -c -o $@ $<
 
 .PHONY: all clean test kuzulib
 

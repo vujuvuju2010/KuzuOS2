@@ -1,0 +1,23 @@
+# Tor Configuration for KuzuOS Hidden Service
+# This configuration runs Tor as a hidden service pointing to the local httpd
+
+# Data directory for Tor state
+DataDirectory /tor/data
+
+# SOCKS proxy port (for applications to connect through Tor)
+SocksPort 9050
+
+# Control port for management
+ControlPort 9051
+
+# Logging - both to file and stdout
+Log notice file /tor/tor.log
+Log notice stdout
+
+# Hidden Service Configuration
+# Serves the local httpd server (port 80) as a .onion address
+HiddenServiceDir /tor/hidden_service
+HiddenServicePort 80 127.0.0.1:80
+
+# Disable exit node functionality (we're only running a hidden service)
+ExitPolicy reject *:*

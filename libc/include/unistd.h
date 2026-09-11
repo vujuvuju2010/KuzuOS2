@@ -31,11 +31,15 @@ pid_t fork(void);
 pid_t getpid(void);
 pid_t getppid(void);
 uid_t getuid(void);
+uid_t geteuid(void);
 gid_t getgid(void);
+gid_t getegid(void);
+unsigned int sleep(unsigned int seconds);
 int execve(const char* filename, char* const argv[], char* const envp[]);
 void _exit(int status);
 int access(const char* path, int amode);
 int isatty(int fildes);
+int chmod(const char* path, int mode);
 
 extern char **environ;
 

@@ -21,6 +21,8 @@ char* strtok_r(char* str, const char* delim, char** saveptr);
 char* strerror(int errnum);
 size_t strspn(const char* s, const char* accept);
 size_t strcspn(const char* s, const char* reject);
+char* strdup(const char* s);
+char* strndup(const char* s, size_t n);
 
 void* memcpy(void* dest, const void* src, size_t n);
 void* memmove(void* dest, const void* src, size_t n);

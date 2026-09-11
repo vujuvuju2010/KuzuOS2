@@ -91,36 +91,35 @@ static void normalize_path(char* dest, const char* src, int max_len) {
 
 // Replace z_open with kernel filesystem
 int z_open(const char *filename, int flags) {
-    
-    print("z_open: ");
-    print(filename ? filename : "(null)");
-    print("\n");
-    
+
     if (next_fd >= 1024) {
         return -1;
     }
-    
+
+    /* For binaries like /dev/ls and /dev/tor, just load the path as-is. */
+    const char *path = filename;
+
     char* loaded_buffer = 0;
     uint32_t loaded_size = 0;
-    int load_result = load_file_into_buffer(filename, &loaded_buffer, &loaded_size);
-    
+    int load_result = load_file_into_buffer(path, &loaded_buffer, &loaded_size);
+
     if (load_result != 0) {
         // Try normalized (uppercase + trimmed) path as fallback
         char normalized[256];
-        normalize_path(normalized, filename, sizeof(normalized));
+        normalize_path(normalized, path, sizeof(normalized));
         load_result = load_file_into_buffer(normalized, &loaded_buffer, &loaded_size);
     }
-    
+
     if (load_result != 0) {
         return -1;
     }
-    
+
     kernel_file_t* f = &kernel_files[next_fd];
-    f->filename = (char*)filename;
+    f->filename = (char*)path;
     f->buffer = loaded_buffer;
     f->size = loaded_size;
     f->pos = 0;
-    
+
     return next_fd++;
 }
 
@@ -602,12 +601,6 @@ int elf_load_and_execve(const char* filename, char* const argv[], char* const en
     // Copy argv blob and offsets
     for (int i = 0; i < blob_pos && i < 511; i++) proc->exec_argv_data[i] = argv_blob[i];
     for (int i = 0; i < argc && i < 32; i++) proc->exec_argv_offsets[i] = argv_offsets[i];
-    
-    // Debug: show what we stored
-    z_printf("[execve] stored argc=%d for pid=%d:\n", argc, pid);
-    for (int i = 0; i < argc; i++) {
-        z_printf("  argv[%d] = '%s'\n", i, proc->exec_argv_data + proc->exec_argv_offsets[i]);
-    }
 
     // Also keep cmd_args for legacy SYS_GETCMDARGS
     {

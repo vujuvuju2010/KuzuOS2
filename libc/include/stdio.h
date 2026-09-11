@@ -32,6 +32,7 @@ int fgetc(FILE* stream);
 int fputc(int c, FILE* stream);
 char* fgets(char* s, int size, FILE* stream);
 int fputs(const char* s, FILE* stream);
+int puts(const char* s);
 int printf(const char* format, ...);
 int fprintf(FILE* stream, const char* format, ...);
 int sprintf(char* str, const char* format, ...);

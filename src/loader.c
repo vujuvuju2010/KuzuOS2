@@ -128,10 +128,21 @@ void z_entry(unsigned long *sp, void (*fini)(void))
         (void)env;
         if (argc < 2)
                 z_errx(1, "no input file");
-        file = argv[1];
+
+        /*
+         * KuzuOS2: argv[1] is the path the shell asked us to exec, e.g.
+         *   /dev/ls, /dev/tor, /system/httpd, ...
+         * For binaries under /dev, we now trust the path as-is and let
+         * z_open() load the correct file from the ISO (e.g. /dev/tor).
+         */
+        const char *orig = argv[1];
+
+        file = orig;
 
         for (i = 0; i < 2; i++, ehdr++) {
                 /* Open file, read and than check ELF header.*/
+                extern void z_printf(const char *fmt, ...);
+                z_printf("[z_entry] loading ELF '%s' (argv[1]='%s')\n", file, orig);
                 if ((fd = z_open(file, O_RDONLY)) <= 0)
                         z_errx(1, "can't open %s", file);
                 if (z_read(fd, ehdr, sizeof(*ehdr)) != sizeof(*ehdr)) {

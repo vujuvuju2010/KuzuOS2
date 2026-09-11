@@ -1127,7 +1127,32 @@ static int iso_find_in_dir(iso_extent dir, const char* name, iso_extent* out, in
             uint8_t fi_len = dr[32]; const char* fi = (const char*)(dr + 33);
             if (!(fi_len == 1 && (fi[0] == 0 || fi[0] == 1))) {
                 char nm[64]; int nlen=(fi_len<63)?fi_len:63; for (int k=0;k<nlen;k++) nm[k]=fi[k]; nm[nlen]=0; for (int k=0;k<nlen;k++) if (nm[k]==';'){ nm[k]=0; break; }
-                to_lowercase(nm);
+                
+                // Check for Rock Ridge "NM" (alternate name) extension
+                int su_offset = 33 + fi_len;
+                if (su_offset % 2) su_offset++; // align to even boundary
+                int has_rr_name = 0;
+                while (su_offset + 4 <= len) {
+                    unsigned char* su = dr + su_offset;
+                    if (su[0] == 'N' && su[1] == 'M' && su[2] >= 5) {
+                        // Found Rock Ridge NM entry - use it as the real filename
+                        int nm_len = su[2] - 5;  // length - header
+                        if (nm_len > 0 && nm_len < 63) {
+                            for (int k=0; k<nm_len; k++) nm[k] = su[5+k];
+                            nm[nm_len] = 0;
+                            has_rr_name = 1;
+                            break;
+                        }
+                    }
+                    if (su[0] == 0 || su[1] == 0 || su[2] == 0) break;
+                    su_offset += su[2];
+                }
+                
+                if (!has_rr_name) {
+                    // No Rock Ridge name, use standard ISO9660 name
+                    to_lowercase(nm);
+                }
+                
                 int nm_len = strlen_local(nm);
                 if (nm_len > 0 && nm[nm_len-1] == '.') nm[nm_len-1] = 0; nm_len = strlen_local(nm);
                 
@@ -1136,14 +1161,23 @@ static int iso_find_in_dir(iso_extent dir, const char* name, iso_extent* out, in
                 int name_len = strlen_local(name);
                 for (int k=0; k<name_len && k<63; k++) name_lower[k] = name[k];
                 name_lower[name_len] = 0;
-                to_lowercase(name_lower);
+                if (!has_rr_name) {
+                    to_lowercase(name_lower);
+                }
                 
                 // Remove trailing dot from search name too
                 if (name_len > 0 && name_lower[name_len-1] == '.') name_lower[name_len-1] = 0;
                 name_len = strlen_local(name_lower);
                 
-                // Match exact or ISO9660 8.3 truncated names (qwerty-layout -> qwerty_l)
-                if (iso_names_match(name, nm)) {
+                // Compare names (exact match if Rock Ridge, fuzzy match otherwise)
+                int match = 0;
+                if (has_rr_name) {
+                    match = (strcmp_local(name_lower, nm) == 0);
+                } else {
+                    match = iso_names_match(name, nm);
+                }
+                
+                if (match) {
                     out->lba = (uint32_t)dr[2] | ((uint32_t)dr[3] << 8) | ((uint32_t)dr[4] << 16) | ((uint32_t)dr[5] << 24);
                     out->size= (uint32_t)dr[10]| ((uint32_t)dr[11]<<8)| ((uint32_t)dr[12]<<16)| ((uint32_t)dr[13]<<24);
                     *is_dir = (flags & 0x02) ? 1 : 0;
@@ -1819,7 +1853,14 @@ int fs_read_file(char* path, char* buffer, uint32_t max_size) {
 }
 
 int fs_get_file_size(char* path) {
-    // Check TinyFS first
+    // Check ramfs first
+    extern ramfs_entry_t* ramfs_get_entry(const char *path);
+    ramfs_entry_t* entry = ramfs_get_entry(path);
+    if (entry && !entry->is_directory) {
+        return (int)entry->size;
+    }
+    
+    // Check TinyFS
     struct fs_header header;
     if (fs_read_header(&header) == 0 && header.magic == FS_MAGIC) {
         for (int i = 0; i < MAX_FILES; i++) {

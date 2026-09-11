@@ -5,6 +5,7 @@
 
 typedef long time_t;
 typedef long clock_t;
+typedef long suseconds_t;
 
 #define CLOCKS_PER_SEC 1000000
 
@@ -23,6 +24,11 @@ struct tm {
 struct timespec {
     time_t tv_sec;
     long tv_nsec;
+};
+
+struct timeval {
+    time_t tv_sec;
+    suseconds_t tv_usec;
 };
 
 time_t time(time_t *t);

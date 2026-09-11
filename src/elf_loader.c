@@ -75,33 +75,22 @@ static unsigned long loadelf_anon(int fd, Elf_Ehdr *ehdr, Elf_Phdr *phdr)
         maxva = ROUND_PG(maxva);
         size = maxva - minva;
 
-
-
-        // For ET_EXEC: Load directly at the virtual addresses (identity mapped)
-        // For ET_DYN: Allocate memory and load there
+        // For ET_EXEC: Load at preferred address (absolute addresses baked in)
+        // For ET_DYN: Allocate anywhere (position-independent)
         if (ehdr->e_type == ET_EXEC) {
-                // Load at exact virtual addresses - need to allocate physical pages
-                // and map them to the requested virtual addresses
-                extern int vmm_map_page(uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
-                extern uint64_t pmm_alloc_frame(void);
-                
-                // Allocate and map pages for the entire region
-                for (uint64_t vaddr = minva; vaddr < maxva; vaddr += PAGE_SIZE) {
-                        uint64_t phys_frame = pmm_alloc_frame();
-                        if (phys_frame == 0) {
-                                goto err;
-                        }
-                        // Map as user-accessible, writable, present
-                        // PAGE_PRESENT=1, PAGE_WRITABLE=2, PAGE_USER=4
-                        if (vmm_map_page(vaddr, phys_frame, 0x7) != 0) {
-                                goto err;
-                        }
+                // ET_EXEC has absolute addresses - MUST load at minva
+                // Check if minva is in already-mapped region (0-1GB or 3GB-4GB)
+                if (minva < 0x40000000UL || (minva >= 0xC0000000UL && minva < 0x100000000UL)) {
+                        // Already mapped by boot.asm - can write directly
+                        base = (unsigned char *)minva;
+                        // Zero the region
+                        z_memset(base, 0, size);
+                } else {
+                        // Not in pre-mapped region - cannot handle this
+                        goto err;
                 }
-                
-                base = (unsigned char *)minva;
-                z_memset(base, 0, size);
         } else {
-                // ET_DYN - allocate memory
+                // ET_DYN - allocate anywhere
                 base = (unsigned char *)kmalloc(size);
                 if (!base) {
                         goto err;
@@ -116,11 +105,11 @@ static unsigned long loadelf_anon(int fd, Elf_Ehdr *ehdr, Elf_Phdr *phdr)
                 if (iter->p_type != PT_LOAD)
                         continue;
 
-                if (ehdr->e_type == ET_EXEC) {
-                        // Load at exact virtual address
+                // For ET_EXEC at minva: load at absolute addresses
+                // For ET_DYN: load relative to base
+                if (ehdr->e_type == ET_EXEC && base == (unsigned char *)minva) {
                         dest = (unsigned char *)iter->p_vaddr;
                 } else {
-                        // Load relative to allocated base
                         unsigned long offset_in_base = iter->p_vaddr - minva;
                         dest = base + offset_in_base;
                 }
@@ -139,12 +128,12 @@ static unsigned long loadelf_anon(int fd, Elf_Ehdr *ehdr, Elf_Phdr *phdr)
                 }
         }
 
-        // For ET_EXEC, return the minva (where it was loaded)
-        // For ET_DYN, return the allocated base
+        // Return the base address
         return (unsigned long)base;
 
 err_free:
-        if (ehdr->e_type == ET_DYN && base)
+        // Only free if we allocated with kmalloc
+        if (base && ehdr->e_type != ET_EXEC)
                 kfree(base);
 err:
         return LOAD_ERR;
@@ -215,11 +204,19 @@ void z_entry(unsigned long *sp, void (*fini)(void))
                         z_errx(1, "can't load ELF %s", file);
 
                 /* Calculate entry point */
-                if (ehdr->e_type == ET_EXEC) {
-                        // For ET_EXEC, entry is an absolute virtual address
+                // For ET_EXEC at minva: entry is absolute (from ELF header)
+                // For ET_DYN or relocated ET_EXEC: entry is base + offset
+                unsigned long minva_for_elf = (unsigned long)-1;
+                for (Elf_Phdr *p = phdr; p < &phdr[ehdr->e_phnum]; p++) {
+                        if (p->p_type == PT_LOAD && p->p_vaddr < minva_for_elf)
+                                minva_for_elf = TRUNC_PG(p->p_vaddr);
+                }
+                
+                if (ehdr->e_type == ET_EXEC && base[i] == minva_for_elf) {
+                        // ET_EXEC loaded at preferred address - use absolute entry
                         entry[i] = ehdr->e_entry;
                 } else {
-                        // For ET_DYN, entry is relative to base
+                        // ET_DYN or relocated - entry is relative
                         entry[i] = base[i] + ehdr->e_entry;
                 }
                 
@@ -283,8 +280,6 @@ void z_entry(unsigned long *sp, void (*fini)(void))
 
         {
                 unsigned long target = (elf_interp ? entry[Z_INTERP] : entry[Z_PROG]);
-                extern void z_printf(const char* fmt, ...);
-                z_printf("[z_entry] jumping to entry=0x%x sp=0x%x\n", (unsigned int)target, (unsigned int)sp);
                 z_trampo((void (*)(void))target, sp, z_fini);
         }
         /* Should not reach. */

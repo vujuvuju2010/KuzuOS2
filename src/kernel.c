@@ -285,6 +285,17 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr) {
     if (copy_result < 0) {
         print_color("  Warning: Failed to copy README.conf\n", VGA_COLOR_LIGHT_RED);
     }
+    copy_result = fs_copy_iso_to_ramfs("/etc/services/tor.conf", "/etc/services/tor.conf");
+    if (copy_result < 0) {
+        print_color("  Warning: Failed to copy tor.conf\n", VGA_COLOR_LIGHT_RED);
+    }
+    copy_result = fs_copy_iso_to_ramfs("/etc/services/torrc", "/etc/services/torrc");
+    if (copy_result < 0) {
+        print_color("  Warning: Failed to copy torrc\n", VGA_COLOR_LIGHT_RED);
+    }
+    
+    // DON'T copy tor binary to RAM - it's too large and causes memory exhaustion
+    // Tor will load directly from ISO (slower but works)
     
     service_manager_init();
     service_load_all_configs();

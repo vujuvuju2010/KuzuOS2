@@ -16,16 +16,9 @@
 // Standard type definitions
 typedef unsigned int size_t;
 
-// Undefined in syscall.h - define locally
-#ifndef SYS_OPENDIR
-#define SYS_OPENDIR  0xFFF1  // Not a real Linux syscall, placeholder
-#endif
-#ifndef SYS_READDIR
-// SYS_READDIR is 89 in syscall.h, already defined
-#endif
-#ifndef SYS_CLOSEDIR
-#define SYS_CLOSEDIR 0xFFF2  // Not a real Linux syscall, placeholder
-#endif
+//
+
+
 #ifndef SYS_ARCH_PRCTL
 #define SYS_ARCH_PRCTL 384
 #endif
@@ -211,11 +204,6 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
                                  uint64_t arg4, uint64_t arg5, uint64_t arg6)
 {
     extern void z_printf(const char* fmt, ...);
-    
-    // Debug: log every syscall
-    if (syscall_num == 45) {
-        z_printf("[SYSCALL_ROUTER] Got syscall %d (BRK) with arg1=0x%x\n", syscall_num, arg1);
-    }
     
     // Delegate to original handler for implemented syscalls
     // Then add new ones here
@@ -476,18 +464,13 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
             extern void z_printf(const char* fmt, ...);
             
             if (!current_process) {
-                z_printf("[BRK] ERROR: current_process is NULL!\n");
                 return -1;
             }
             
             uint32_t new_brk = (uint32_t)arg1;
             
-            z_printf("[BRK] Called with arg1=0x%x, heap_start=0x%x, heap_end=0x%x\n",
-                     new_brk, current_process->heap_start, current_process->heap_end);
-            
             // If heap not initialized yet, set up a dedicated user heap region
             if (current_process->heap_start == 0) {
-                z_printf("[BRK] First call, allocating user heap region...\n");
                 
                 // Try progressively smaller sizes until one succeeds
                 uint32_t heap_mem_addr = 0;
@@ -510,16 +493,12 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
                 void* heap_mem = (void*)heap_mem_addr;
                 
                 if (!heap_mem) {
-                    z_printf("[BRK] ERROR: kmalloc failed for user heap!\n");
                     return -1;
                 }
 
-                // delete these 2 if something is broken 
+                // Zero out the heap region
                 uint8_t* p = (uint8_t*)heap_mem;
                 for (uint32_t zi = 0; zi < heap_size; zi++) p[zi] = 0;
-
-                z_printf("[BRK] kmalloc returned address: 0x%x\n", heap_mem_addr);
-                z_printf("[BRK] address low 4 bits: %d\n", heap_mem_addr & 0xF);
                 
                 uint32_t heap_base = (uint32_t)heap_mem;
                 
@@ -527,48 +506,36 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
                 current_process->heap_end = heap_base;  // Start at base, will grow
                 current_process->heap_max = heap_base + heap_size;
                 
-                z_printf("[BRK] User heap: 0x%x - 0x%x (%d MB)\n", 
-                         heap_base, heap_base + heap_size, heap_size / (1024*1024));
-                
                 // If querying (addr=0), return current end (which is start initially)
                 if (new_brk == 0) {
-                    z_printf("[BRK] Returning initial heap_end: 0x%x\n", heap_base);
                     return (int32_t)heap_base;
                 }
                 
                 // If setting brk on first call, allow it if within bounds
                 if (new_brk >= heap_base && new_brk <= current_process->heap_max) {
                     current_process->heap_end = new_brk;
-                    z_printf("[BRK] First allocation: set heap_end to 0x%x\n", new_brk);
                     return (int32_t)new_brk;
                 }
                 
-                z_printf("[BRK] ERROR: First allocation out of bounds: 0x%x\n", new_brk);
                 return (int32_t)heap_base;
             }
             
             // If addr is 0, return current brk
             if (new_brk == 0) {
-                z_printf("[BRK] Query: returning current heap_end: 0x%x\n", current_process->heap_end);
                 return (int32_t)current_process->heap_end;
             }
             
             // Check if new_brk is valid
             if (new_brk < current_process->heap_start) {
-                z_printf("[BRK] ERROR: new_brk 0x%x < heap_start 0x%x\n", new_brk, current_process->heap_start);
-                return (int32_t)current_process->heap_end;  // brk shat itself ::(
+                return (int32_t)current_process->heap_end;  // brk failed
             }
             
             if (new_brk > current_process->heap_max) {
-                z_printf("[BRK] ERROR: new_brk 0x%x > heap_max 0x%x (requested %d MB)\n", 
-                         new_brk, current_process->heap_max, 
-                         (new_brk - current_process->heap_start) / (1024*1024));
                 return (int32_t)current_process->heap_end;  // Can't grow beyond max
             }
             
             // Just update the pointer within our pre-allocated space
             current_process->heap_end = new_brk;
-            z_printf("[BRK] SUCCESS: Set heap_end to 0x%x\n", new_brk);
             return (int32_t)new_brk;
         }
         
@@ -595,6 +562,37 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
         
         case SYS_MUNMAP: {
             // int munmap(void *addr, size_t length) - stub success
+            return 0;
+        }
+        
+        // ==================== I/O Multiplexing ====================
+        case SYS_POLL: {
+            // int poll(struct pollfd *fds, nfds_t nfds, int timeout)
+            struct pollfd {
+                int fd;
+                short events;
+                short revents;
+            };
+            
+            struct pollfd *fds = (struct pollfd *)arg1;
+            unsigned long nfds = (unsigned long)arg2;
+            int timeout = (int)arg3;
+            
+            // Simple poll implementation - just return 0 (timeout) for now
+            // This allows event loops to continue without hanging
+            // TODO: Actually check file descriptors for readiness
+            
+            if (!fds || nfds == 0) {
+                return 0;  // No fds to poll
+            }
+            
+            // Clear all revents
+            for (unsigned long i = 0; i < nfds; i++) {
+                fds[i].revents = 0;
+            }
+            
+            // For now, return 0 (timeout) to prevent hanging
+            // A real implementation would check fd readiness
             return 0;
         }
         

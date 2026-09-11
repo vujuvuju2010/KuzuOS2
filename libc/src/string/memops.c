@@ -79,3 +79,25 @@ char* strstr(const char* haystack, const char* needle) {
     }
     return NULL;
 }
+
+char* strdup(const char* s) {
+    extern void* malloc(size_t);
+    if (!s) return NULL;
+    size_t len = strlen(s) + 1;
+    char* dup = (char*)malloc(len);
+    if (dup) memcpy(dup, s, len);
+    return dup;
+}
+
+char* strndup(const char* s, size_t n) {
+    extern void* malloc(size_t);
+    if (!s) return NULL;
+    size_t len = strlen(s);
+    if (len > n) len = n;
+    char* dup = (char*)malloc(len + 1);
+    if (dup) {
+        memcpy(dup, s, len);
+        dup[len] = '\0';
+    }
+    return dup;
+}

@@ -108,6 +108,15 @@ int fputs(const char* s, FILE* stream) {
     return (int)write(stream->fd, s, strlen(s));
 }
 
+int puts(const char* s) {
+    int ret = (int)write(stdout->fd, s, strlen(s));
+    if (ret >= 0) {
+        write(stdout->fd, "\n", 1);
+        ret++;
+    }
+    return ret;
+}
+
 int fseek(FILE* stream, long offset, int whence) {
     return (int)lseek(stream->fd, (off_t)offset, whence);
 }

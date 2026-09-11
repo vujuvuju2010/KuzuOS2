@@ -36,4 +36,8 @@ typedef unsigned long long uintmax_t;
 #define INT64_MAX       9223372036854775807LL
 #define UINT64_MAX      18446744073709551615ULL
 
+/* Macros for 64-bit constants */
+#define UINT64_C(x)  x##ULL
+#define INT64_C(x)   x##LL
+
 #endif
