@@ -1,6 +1,7 @@
 // syscall_router.c - Route and handle all Linux-compatible syscalls for KuzuOS5
 // This is the main syscall dispatcher that routes to appropriate handlers
 
+#include <stdint.h>
 #include "syscall.h"
 #include "syscall_linux_compat.h"
 #include "vga.h"
@@ -728,6 +729,68 @@ int32_t handle_syscall_extended(uint64_t syscall_num,
         case 307: {  // SYS_NET_ARP_REQUEST
             extern void arp_request(uint32_t);
             arp_request(arg1);
+            return 0;
+        }
+
+        // ==================== Mouse Input ====================
+        case 310: {  // SYS_MOUSE_POLL
+            // Poll for mouse event
+            // Returns: 1 if event available, 0 if no event
+            typedef struct {
+                int8_t  dx;
+                int8_t  dy;
+                uint8_t buttons;
+            } mouse_event_t;
+            
+            mouse_event_t* event = (mouse_event_t*)arg1;
+            if (!event) return -1;
+            
+            extern int mouse_pop_event(mouse_event_t* out);
+            return mouse_pop_event(event);
+        }
+        
+        case 311: {  // SYS_USB_POLL
+            // Trigger USB device polling (including mouse)
+            extern void usb_poll(void);
+            usb_poll();
+            
+            // Update kernel cursor if enabled
+            extern void mouse_update_kernel_cursor(void);
+            mouse_update_kernel_cursor();
+            
+            return 0;
+        }
+        
+        case 312: {  // SYS_GET_FRAMEBUFFER
+            // Get framebuffer info
+            // arg1 = pointer to struct { void* addr; uint32_t width; uint32_t height; uint32_t pitch; }
+            typedef struct {
+                void* addr;
+                uint32_t width;
+                uint32_t height;
+                uint32_t pitch;
+            } fb_info_t;
+            
+            fb_info_t* info = (fb_info_t*)arg1;
+            if (!info) return -1;
+            
+            extern uint32_t* framebuffer;
+            extern uint32_t fb_width;
+            extern uint32_t fb_height;
+            extern uint32_t fb_pitch;
+            
+            info->addr = (void*)framebuffer;
+            info->width = fb_width;
+            info->height = fb_height;
+            info->pitch = fb_pitch;
+            return 0;
+        }
+        
+        case 313: {  // SYS_KERNEL_CURSOR
+            // Enable/disable kernel-side cursor rendering
+            // arg1: 1 = enable, 0 = disable
+            extern void mouse_enable_kernel_cursor(int enable);
+            mouse_enable_kernel_cursor((int)arg1);
             return 0;
         }
 

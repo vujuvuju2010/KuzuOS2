@@ -8,6 +8,7 @@ struct xchi_device_t;
 #define USB_DRIVER_NONE      0
 #define USB_DRIVER_KEYBOARD  1
 #define USB_DRIVER_MSC       2 
+#define USB_DRIVER_MOUSE     3
 
 void usb_scan(void);
 unsigned int echi_read(unsigned int reg);
@@ -174,5 +175,9 @@ int msc_send_cum(usb_device_t* dev, unsigned char* cb, unsigned char cb_len, voi
 // USB 3.0 (xHCI) mass storage functions
 int msc_read_sector_xchi(struct xchi_device_t* xdev, unsigned int lba, void* buffer);
 int msc_write_sector_xchi(struct xchi_device_t* xdev, unsigned int lba, void* buffer);
+
+//for usb ehci 
+void usbmouse_attach(usb_device_t* dev);
+void usbmouse_poll_device(usb_device_t* dev);
 
 #endif

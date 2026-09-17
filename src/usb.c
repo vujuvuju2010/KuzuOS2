@@ -281,7 +281,7 @@ inline void scanports(void){
             usbconf(dev->addr);
 
             if(dev->class == 3){
-                print_color("its a keyboarddd", VGA_COLOR_GREEN);
+                print_color("its a HID device can be a mouse too idkkk maan", VGA_COLOR_GREEN);
                 usbkeyboard(dev);
             }
             // deleteded tje usb keyboard from here and into the if because the fuckass MSD wew getting a keyboard n shi like total shitshow on wheels
@@ -547,16 +547,22 @@ void usb_bind_driver(usb_device_t* dev)
 {
     if(dev->class == 3)
     {
-        usbkbd_attach(dev);
+        if(dev->protocol == 0x02)
+        {
+            usbmouse_attach(dev);
+        }
+        else
+        {
+            
+            usbkbd_attach(dev);
+        }
         return;
     }
     if(dev->class == USB_CLASS_MSC){
         usbmsc_attach(dev);
         return;
     }
-
 }
-
 
 
 void usb_poll(void)
@@ -576,14 +582,18 @@ void usb_poll(void)
                     &usb_devices[i]
                 );
                 break;
+            case USB_DRIVER_MOUSE:              
+                usbmouse_poll_device(           
+                    &usb_devices[i]           
+                );                              
+                break;                           
             case USB_DRIVER_MSC:
                 // buralar halen dutluk yeğenim
+		// side note: buralar nie hala dutluk aw
                 break;
         }
     }
-}
-
-// main usb init fucntions MUST ALWAYS BE AT THE BOTTTOM
+}// main usb init fucntions MUST ALWAYS BE AT THE BOTTTOM
 
 
 void usb_init(void)

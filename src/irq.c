@@ -33,6 +33,16 @@ void irq_handler(struct regs* r) {
         timer_ticks++;
         
         // Keyboard is now handled by IRQ1 handler only - avoid double-reading scancodes
+        
+        // USB polling for kernel cursor (every 10 ticks = ~100Hz)
+        static int usb_poll_count = 0;
+        if (++usb_poll_count >= 10) {
+            usb_poll_count = 0;
+            extern void usb_poll(void);
+            extern void mouse_update_kernel_cursor(void);
+            usb_poll();
+            mouse_update_kernel_cursor();
+        }
 
         // Background process scheduling
         if (process_has_background()) {

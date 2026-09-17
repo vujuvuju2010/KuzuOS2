@@ -18,7 +18,7 @@ kernel.bin: boot.o kernel.o usb.o usbmsc.o keyboardusb.o vfs.o tty.o memory.o pm
             gdt_flush.o loader_kernel.o enter_user_mode.o \
             context_switch.o elf_loader.o \
             z_printf.o z_utils.o z_err.o z_trampo.o \
-            net.o e1000.o ethernet.o arp.o net_ip.o tcp.o udp.o dns.o \
+            net.o e1000.o ethernet.o arp.o net_ip.o tcp.o udp.o dns.o mouse.o\
             keymap_loader.o service.o smp.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
@@ -75,6 +75,8 @@ kernel.o: src/kernel.c
 gdt.o: src/gdt.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+mouse.o: src/mouse.c
+	$(CC) $(CFLAGS) -c -o $@ $<
 memory.o: src/memory.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -358,6 +360,13 @@ servicectl: servicectl.o libkuzu.a
 servicectl.o: src/servicectl.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# Mouse demo app
+mouse: mouse_app.o
+	$(LD) -m elf_x86_64 -s -Ttext=0x00400000 -o $@ mouse_app.o
+
+mouse_app.o: src/mouse_app.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 # TinyCC Compiler (using real TinyCC libtcc only, skip tcc.c main)
 # All TinyCC modules are #included in libtcc.c when ONE_SOURCE=1
 tcc: tcc_start.o tinycc_kuzuos.o tinycc_libtcc.o libkuzu.a
@@ -449,10 +458,10 @@ iso/etc/services/README.conf:
 KBD_INC ?= /usr/share/kbd/keymaps/i386/include
 KBD_COMPOSE ?= /usr/share/kbd/keymaps/include
 
-kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill servicectl hello.c index.html banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map iso/etc/services/httpd.conf iso/etc/services/network.conf iso/etc/services/README.conf
+kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill servicectl mouse hello.c index.html banner_frames/*.bin lib/crt1.o lib/crti.o lib/crtn.o keymaps/us.map keymaps/trq.map iso/etc/services/httpd.conf iso/etc/services/network.conf iso/etc/services/README.conf
 	mkdir -p iso/boot iso/dev iso/lib iso/dev/keys iso/www iso/etc/services
 	cp kernel.bin iso/boot/
-	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill servicectl iso/dev/
+	cp echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping httpd loadkeys ps kill servicectl mouse iso/dev/
 	cp hello.c iso/dev/
 	cp index.html iso/www/
 	cp banner_frames/*.bin iso/dev/
@@ -470,7 +479,7 @@ kuzuos.iso: kernel.bin iso/boot/grub/grub.cfg echo calc tmux hlt ls mkdir clear 
 # Utilities
 # --------------------------------------------------------------------
 clean:
-	rm -f *.o kernel.bin kuzuos.iso echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping loadkeys ps kill net_ip.o ip_user.o
+	rm -f *.o kernel.bin kuzuos.iso echo calc tmux hlt ls mkdir clear pwd cd cat touch whoami date uname vim gif lsusb tcc ip ping loadkeys ps kill mouse net_ip.o ip_user.o mouse_app.o
 	rm -f libkuzu.a kuzulib/*.o
 	rm -f /tmp/ctype_stub.c libc_*.o
 	rm -rf iso
